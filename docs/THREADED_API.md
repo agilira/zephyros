@@ -136,4 +136,4 @@ tz.Close()  // Safe to call again (idempotent)
 
 ---
 
-*Zephyros • an AGILira fragment*
+Zephyros • an AGILira fragment
