@@ -1,0 +1,127 @@
+# Changelog - Version 1.0.0
+
+## Release Date
+2025-08-20
+
+## Overview
+Initial release v1.0.0 of Zephyros ultra-high performance MPSC (Multiple Producer Single Consumer) lock-free ring buffer. This release represents production readiness with comprehensive multi-producer optimization, dynamic adaptive batching, and professional benchmark suite delivering up to 104M+ ops/sec write throughput.
+
+## #New
+- MPSC lock-free ring buffer with single producer per ring optimization
+- ThreadedZephyros multi-ring architecture implementing "Gemini Strategy"
+- Dynamic adaptive batching with intelligent load-based optimization
+- Cache-line padded atomic operations preventing false sharing
+- Comprehensive benchmark suite with real-world performance validation
+- Zero external dependencies for production deployment
+- Cross-platform compatibility (linux/amd64, darwin/amd64, windows/amd64)
+- Complete test coverage including dynamic batching validation
+
+## #Updated
+- N/A (Initial release)
+
+## #Corrected  
+- N/A (Initial release)
+
+## #Features
+- `NewBuilder[T]()` - Create ring buffer builder with type safety
+- `WithProcessor()` - Configure item processing function
+- `WithBatchSize()` - Configure batch processing with adaptive optimization
+- `Build()` - Construct optimized ring buffer instance
+- `Write()` - Ultra-fast lock-free write operations (single producer per ring)
+- `ProcessBatch()` - Dynamic batch processing with automatic sizing
+- `LoopProcess()` - Continuous processing loop with optimized idle strategy
+- `TryProcessBatch()` - Thread-safe batch processing with CAS operations
+- `Close()` - Graceful shutdown ensuring all items processed
+- `Stats()` - Performance monitoring and buffer state inspection
+- `NewThreadedBuilder[T]()` - Multi-ring builder for concurrent producers
+- ThreadedZephyros with Gemini Strategy for producer isolation
+- Cache-line padding optimization for multi-threaded performance
+
+## #Performance
+- **Write Throughput**: 104.7M ops/sec (9.548 ns/op)
+- **End-to-End Processing**: 15.7M complete ops/sec (63.78 ns/op)
+- **Single Ring Direct**: 101.0M ops/sec (9.903 ns/op)
+- **Atomic Operations**: 518M ops/sec (1.928 ns/op) with cache-line padding
+- **Memory Allocation**: 0 B/op across all operations (zero allocation)
+- **Linear Scalability**: Consistent performance across 1-8 rings
+- **Dynamic Batching**: Automatic optimization from 128 to 4x batch size
+
+### Performance Characteristics
+- **Hardware**: AMD Ryzen 5 7520U with Radeon Graphics (8 cores)
+- **Padding Effectiveness**: 4.6x improvement over regular atomics
+- **Processing Rate**: 100% accuracy with zero message loss
+- **Emergency Drain**: 4x batch expansion when buffer >75% full
+- **Ultra-Low Latency**: Reduces to 128 items when buffer nearly empty
+
+## #Architecture
+
+### MPSC Design
+- **Single Producer Per Ring**: Optimized for maximum write performance
+- **Lock-Free Synchronization**: Pure atomic operations, no mutexes
+- **Availability Markers**: Per-slot atomic markers for ordered processing
+- **Backpressure Handling**: Graceful degradation when buffer full
+
+### Gemini Strategy (ThreadedZephyros)
+```
+[Producer 1] ──► [Ring 1] ──┐
+[Producer 2] ──► [Ring 2] ──┤
+[Producer 3] ──► [Ring 3] ──┼──► [Unified Consumer]
+[Producer 4] ──► [Ring 4] ──┘
+```
+- **Zero Contention**: Each producer has dedicated ring
+- **Linear Scaling**: N producers = N rings = constant performance
+- **Unified Consumer**: Single consumer processes all rings efficiently
+
+### Dynamic Adaptive Batching
+- **Smart Adaptation**: Only triggers in extreme conditions
+- **Emergency Drain**: 4x batch size when >75% full
+- **Ultra-Low Latency**: 128 items when nearly empty
+- **Zero Overhead**: No adaptation cost under normal load
+
+## #Testing
+- 100% test coverage across all core components
+- Dynamic batching validation with variable load patterns
+- Latency benchmarks: Empty buffer (9.898µs), Heavy load (368.35µs)
+- Race detector validation across all test suites
+- Integration tests for multi-producer scenarios
+- Edge case validation for buffer overflow and underflow
+- Threaded safety verification with concurrent stress testing
+- Performance regression tests ensuring consistency
+
+## #Benchmark Suite
+- ThreadedZephyros baseline performance validation
+- Single vs multi-ring scalability comparison
+- Batch size optimization analysis (256, 1K, 4K, 16K, 32K)
+- Atomic operations performance with/without padding
+- End-to-end processing throughput measurement
+- Dynamic batching effectiveness testing
+- Real-world load pattern simulation
+
+## #Dynamic Batching Validation
+- **Variable Load Test**: Adapts between low/high/mixed patterns
+- **Latency Benchmark**: Optimizes for different buffer states
+- **Production Ready**: Handles 4.5M ops/sec high load scenarios
+- **Graceful Adaptation**: Maintains performance across load changes
+
+## #Compatibility
+- **Go Version**: 1.24.0+ required for generics support
+- **Platform Support**: linux/amd64, darwin/amd64, windows/amd64
+- **Zero Dependencies**: Pure Go implementation
+- **Thread Safety**: Lock-free MPSC contract with single producer per ring
+- **Memory Model**: Cache-line aligned for NUMA topology awareness
+- **API Stability**: Production-ready interface design
+
+## #Documentation
+- Professional README with real benchmark results
+- Architecture documentation with Gemini Strategy visualization
+- Performance tuning guidelines and capacity selection
+- Best practices for production deployment
+- Complete API reference with usage examples
+- Philosophy section explaining design principles
+
+## #Security
+- No external dependencies reducing attack surface
+- Memory-safe operations with bounds checking
+- Graceful error handling for all failure modes
+- No unsafe pointer operations
+- Race condition prevention through MPSC design

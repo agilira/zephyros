@@ -1,0 +1,158 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-lint:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: [1.23, 1.24]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go ${{ matrix.go-version }}
+      uses: actions/setup-go@v4
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Format check
+      run: |
+        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+          echo "Code is not properly formatted"
+          gofmt -s -l .
+          exit 1
+        fi
+
+    - name: Lint with golangci-lint
+      uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        args: --timeout=5m
+
+    - name: Static analysis with staticcheck
+      uses: dominikh/staticcheck-action@v1.3.0
+      with:
+        version: "2023.1.6"
+
+    - name: Run tests
+      run: go test -v -coverprofile=coverage.out ./...
+
+    - name: Upload coverage to Codecov
+      if: matrix.go-version == '1.24'
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+
+  race-detection:
+    name: Race Detection
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Install build dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential
+
+    - name: Enable CGO and run race detection
+      run: |
+        export CGO_ENABLED=1
+        go test -race -v ./...
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Run Gosec Security Scanner
+      run: |
+        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        gosec -fmt sarif -out gosec.sarif ./...
+
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: gosec.sarif
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Build for ${{ matrix.goos }}/${{ matrix.goarch }}
+      run: |
+        GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v ./...
+
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
+
+    - name: Run benchmarks
+      run: |
+        go test -bench=BenchmarkThreadedZephyros_Baseline -benchtime=1s -count=3 -run=^$ > benchmark_results.txt
+        go test -bench=BenchmarkThreadedZephyros_ProcessingThroughput -benchtime=1s -count=1 -run=^$ >> benchmark_results.txt
+
+    - name: Archive benchmark results
+      uses: actions/upload-artifact@v3
+      with:
+        name: benchmark-results
+        path: benchmark_results.txt

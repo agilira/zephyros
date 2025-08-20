@@ -1,29 +1,60 @@
-# Zephyros
+# Zephyros: Ultra-High Performance MPSC Ring Buffer for Go
+### an AGILira fragment
 
-A high-performance Go library for concurrent operation processing with advanced features including batch processing, strategic caching, memory pooling, rate limiting, validation, health monitoring, and comprehensive metrics.
+Zephyros is a lock-free, zero-allocation MPSC ring buffer for Go applications requiring extreme multi-producer throughput and minimal latency.
 
-## Features
+[![CI/CD Pipeline](https://github.com/agilira/zephyros/workflows/CI/CD%20Pipeline/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22CI%2FCD+Pipeline%22)
+[![Gosec Security](https://github.com/agilira/zephyros/workflows/Gosec%20Security/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22Gosec+Security%22)
+[![Go Report Card](https://goreportcard.com/badge/github.com/agilira/zephyros?v=1)](https://goreportcard.com/report/github.com/agilira/zephyros)
+[![Coverage](https://img.shields.io/badge/coverage-94.3%25-brightgreen)](https://github.com/agilira/zephyros)
 
-### Core Functionality
-- **Concurrent Operation Processing**: Worker pool pattern with configurable worker count and queue size
-- **Batch Processing**: Efficient batch operation handling with configurable batch sizes and timeouts
-- **Strategic Caching**: LRU cache with TTL support and size limits
-- **Memory Pooling**: Object pooling for improved memory efficiency
-- **Graceful Shutdown**: Proper resource cleanup and worker coordination
+## Architecture
 
-### Enhanced Features
-- **Rate Limiting**: Token bucket rate limiting with configurable requests per second and burst size
-- **Input Validation**: Comprehensive operation validation with configurable rules
-- **Health Monitoring**: Continuous health checks with latency tracking
-- **Advanced Metrics**: Detailed performance metrics including P50, P95, P99 latencies and throughput
-- **Retry Logic**: Configurable retry mechanisms with exponential backoff
-- **Error Handling**: Robust error handling with panic recovery
+Zephyros provides optimized ring buffer architectures for different concurrency patterns:
 
-### Performance Optimizations
-- **Non-blocking Operations**: Asynchronous operation submission
-- **Efficient Memory Management**: Object reuse and strategic caching
-- **Concurrent Safety**: Thread-safe operations with proper synchronization
-- **Configurable Timeouts**: Flexible timeout configuration for different use cases
+### Zephyros Core
+- **MPSC Lock-Free**: Single consumer, optimized single producer per ring
+- **Zero Allocations**: Pre-allocated buffers eliminate GC pressure
+- **Cache-Line Padding**: Prevents false sharing for multi-threaded performance
+- **Dynamic Adaptive Batching**: Intelligent batch sizing based on buffer load
+- **Performance**: 104M+ ops/sec sustained throughput with ~9.5ns latency
+
+### ThreadedZephyros
+- **Multi-Ring Architecture**: Dedicated rings for concurrent producers
+- **Gemini Strategy**: Eliminates producer contention through ring separation  
+- **Linear Scalability**: Consistent performance across 1-8 rings
+- **Unified Consumer**: Single consumer processes all rings efficiently
+
+```
+Gemini Strategy Architecture:
+
+[Producer 1] ──► [Ring 1] ──┐
+[Producer 2] ──► [Ring 2] ──┤
+[Producer 3] ──► [Ring 3] ──┼──► [Unified Consumer]
+[Producer 4] ──► [Ring 4] ──┘
+
+- Zero contention between producers
+- Single consumer eliminates coordination overhead
+- Linear scaling: N producers = N rings = constant performance
+```
+
+## Performance
+
+Zephyros is engineered for multi-producer performance. The following benchmarks demonstrate sustained throughput of 100M+ ops/sec with zero memory allocations and dynamic adaptive batching.
+
+### AMD Ryzen 5 7520U with Radeon Graphics (8 cores)
+```
+BenchmarkThreadedZephyros_Baseline-8           374885246        9.548 ns/op    104.7M ops/sec      0 B/op    0 allocs/op
+BenchmarkThreadedZephyros_ProcessingThroughput-8 55866120       63.78 ns/op     15.7M complete/sec
+BenchmarkAtomicPaddedInt64_MultiThread-8      1000000000        1.928 ns/op    518.3M ops/sec      0 B/op    0 allocs/op
+```
+
+**Key Features:**
+- **104M+ ops/sec** write throughput 
+- **15.7M complete ops/sec** end-to-end processing
+- **Dynamic adaptive batching** automatically optimizes for load
+- **Linear scalability** across multiple rings
+- **518M atomic ops/sec** with cache-line padding
 
 ## Installation
 
@@ -33,465 +64,187 @@ go get github.com/agilira/zephyros
 
 ## Quick Start
 
+### Single Producer Usage
+
 ```go
 package main
 
 import (
-    "context"
     "fmt"
-    "log"
-    "time"
-
     "github.com/agilira/zephyros"
 )
 
-// Example operation handler
-type ExampleHandler struct{}
+func main() {
+    // Create ring buffer for single producer
+    buffer, err := zephyros.NewBuilder[int](1024).
+        WithProcessor(func(item *int) {
+            fmt.Printf("Processing: %d\n", *item)
+        }).
+        WithBatchSize(32). // Dynamic batching will adapt this
+        Build()
 
-func (h *ExampleHandler) Process(ctx context.Context, op zephyros.Operation) (zephyros.OperationResult, error) {
-    // Process the operation
-    result := fmt.Sprintf("Processed: %s", op.Value)
-    
-    return zephyros.OperationResult{
-        OperationID: op.ID,
-        Success:     true,
-        Data:        result,
-        Duration:    time.Since(op.Timestamp),
-    }, nil
+    if err != nil {
+        panic(err)
+    }
+    defer buffer.Close()
+
+    // Start consumer
+    go buffer.LoopProcess()
+
+    // Producer: write data (single producer per ring)
+    for i := 0; i < 1000; i++ {
+        success := buffer.Write(func(slot *int) {
+            *slot = i
+        })
+        if !success {
+            fmt.Println("Buffer full - backpressure active")
+        }
+    }
 }
+```
+
+### Multi-Producer Usage (ThreadedZephyros)
+
+```go
+package main
+
+import (
+    "sync"
+    "github.com/agilira/zephyros"
+)
 
 func main() {
-    // Create configuration
-    config := zephyros.PoolConfig{
-        WorkerCount:   4,
-        QueueSize:     1000,
-        MaxWaitTime:   30 * time.Second,
-        EnableMetrics: true,
-        
-        // Enable batch processing
-        BatchConfig: zephyros.BatchConfig{
-            EnableBatchProcessing: true,
-            BatchSize:            10,
-            BatchTimeout:         20 * time.Millisecond,
-        },
-        
-        // Enable caching
-        CacheConfig: zephyros.CacheConfig{
-            EnableCaching: true,
-            CacheSize:     1000,
-            TTL:           5 * time.Minute,
-        },
-        
-        // Enable enhanced features
-        RetryConfig: zephyros.RetryConfig{
-            EnableRetry:       true,
-            MaxRetries:        3,
-            RetryDelay:        100 * time.Millisecond,
-            BackoffMultiplier: 2.0,
-        },
-        
-        RateLimitConfig: zephyros.RateLimitConfig{
-            EnableRateLimit:   true,
-            RequestsPerSecond: 1000,
-            BurstSize:         100,
-        },
-        
-        ValidationConfig: zephyros.ValidationConfig{
-            EnableValidation: true,
-            MaxKeyLength:     256,
-            MaxValueLength:   1024,
-        },
-        
-        HealthConfig: zephyros.HealthConfig{
-            EnableHealthCheck:    true,
-            HealthCheckInterval:  30 * time.Second,
-            MaxQueueLatency:      1 * time.Second,
-            MaxProcessingLatency: 5 * time.Second,
-        },
-    }
+    var wg sync.WaitGroup
 
-    // Create operation pool
-    handler := &ExampleHandler{}
-    pool, err := zephyros.NewOperationPool(config, handler)
+    // Create multi-ring system for concurrent producers
+    threaded, err := zephyros.NewThreadedBuilder[int](1024, 4). // 4 rings
+        WithProcessor(func(item *int) {
+            // Process item with automatic batch optimization
+        }).
+        WithBatchSize(64).
+        Build()
+
     if err != nil {
-        log.Fatal(err)
+        panic(err)
     }
-    defer pool.Close()
+    defer threaded.Close()
 
-    ctx := context.Background()
+    // Start unified consumer
+    go threaded.LoopProcess()
 
-    // Submit operations
-    for i := 0; i < 100; i++ {
-        op := zephyros.Operation{
-            Type:  "example",
-            Key:   fmt.Sprintf("key_%d", i),
-            Value: fmt.Sprintf("value_%d", i),
-        }
-        
-        if err := pool.Submit(ctx, op); err != nil {
-            log.Printf("Submit error: %v", err)
-        }
-    }
-
-    // Get results
-    for i := 0; i < 100; i++ {
-        result, err := pool.GetResult(ctx)
-        if err != nil {
-            log.Printf("Get result error: %v", err)
-            continue
-        }
-        
-        if result.Success {
-            fmt.Printf("Result: %v\n", result.Data)
-        }
+    // Multiple producers, each with dedicated ring
+    for producerID := 0; producerID < 4; producerID++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            for i := 0; i < 100000; i++ {
+                threaded.Write(id, func(slot *int) {
+                    *slot = id*100000 + i
+                })
+            }
+        }(producerID)
     }
 
-    // Get metrics
-    metrics := pool.GetMetrics()
-    fmt.Printf("Processed: %d, Failed: %d, Avg Duration: %v\n",
-        metrics.ProcessedOps, metrics.FailedOps, metrics.AverageDuration)
+    wg.Wait()
+    fmt.Println("Multi-producer processing complete")
 }
 ```
 
-## Configuration
+## Advanced Features
 
-### PoolConfig
+### Dynamic Adaptive Batching
+- **Automatic optimization**: Batch size adapts to buffer occupancy
+- **Emergency drain**: 4x expansion when buffer >75% full  
+- **Ultra-low latency**: Reduces to 128 items when nearly empty
+- **Zero overhead**: Triggers only in extreme conditions
 
-The main configuration struct that controls all aspects of the operation pool:
+### MPSC Contract
+- **Single producer per ring**: Optimized for maximum performance
+- **ThreadedZephyros for multiple producers**: Use separate rings
+- **Lock-free synchronization**: Pure atomic operations
 
-```go
-type PoolConfig struct {
-    WorkerCount      int           // Number of worker goroutines
-    QueueSize        int           // Size of operation queue
-    MaxWaitTime      time.Duration // Maximum wait time for operations
-    ShutdownTimeout  time.Duration // Graceful shutdown timeout
-    EnableMetrics    bool          // Enable metrics collection
-    EnableObjectPool bool          // Enable object pooling
-    
-    BatchConfig      BatchConfig   // Batch processing configuration
-    CacheConfig      CacheConfig   // Caching configuration
-    RetryConfig      RetryConfig   // Retry configuration
-    RateLimitConfig  RateLimitConfig // Rate limiting configuration
-    HealthConfig     HealthConfig // Health monitoring configuration
-    ValidationConfig ValidationConfig // Input validation configuration
-}
-```
+## Use Cases
 
-### Batch Processing
-
-Configure batch processing for high-throughput scenarios:
-
-```go
-BatchConfig: zephyros.BatchConfig{
-    EnableBatchProcessing: true,
-    BatchSize:            10,              // Operations per batch
-    BatchTimeout:         20 * time.Millisecond, // Max wait for batch
-    FlushInterval:        10 * time.Millisecond, // Regular flush interval
-    MaxBatchSize:         100,             // Maximum batch size
-}
-```
-
-### Caching
-
-Configure strategic caching for expensive operations:
-
-```go
-CacheConfig: zephyros.CacheConfig{
-    EnableCaching:   true,
-    CacheSize:       1000,               // Maximum cache entries
-    TTL:             5 * time.Minute,    // Time-to-live for entries
-    CleanupInterval: 1 * time.Minute,    // Cleanup interval
-    MaxKeySize:      256,                // Maximum key size
-    MaxValueSize:    1024,               // Maximum value size
-    EnableCompression: false,            // Enable compression
-}
-```
-
-### Rate Limiting
-
-Configure rate limiting to prevent overload:
-
-```go
-RateLimitConfig: zephyros.RateLimitConfig{
-    EnableRateLimit:   true,
-    RequestsPerSecond: 1000,             // Requests per second limit
-    BurstSize:         100,              // Burst capacity
-    WindowSize:        time.Second,      // Time window
-}
-```
-
-### Validation
-
-Configure input validation rules:
-
-```go
-ValidationConfig: zephyros.ValidationConfig{
-    EnableValidation: true,
-    MaxKeyLength:     256,               // Maximum key length
-    MaxValueLength:   1024,              // Maximum value length
-    MaxMetadataSize:  1024,              // Maximum metadata size
-    AllowedTypes:     []string{"read", "write"}, // Allowed operation types
-    ForbiddenKeys:    []string{"admin"}, // Forbidden keys
-}
-```
-
-### Health Monitoring
-
-Configure health monitoring and alerts:
-
-```go
-HealthConfig: zephyros.HealthConfig{
-    EnableHealthCheck:    true,
-    HealthCheckInterval:  30 * time.Second, // Health check frequency
-    MaxQueueLatency:      1 * time.Second,  // Maximum queue latency
-    MaxProcessingLatency: 5 * time.Second,  // Maximum processing latency
-}
-```
+- **High-Frequency Trading**: Multi-feed market data processing
+- **Real-Time Analytics**: Concurrent stream processing
+- **Message Queues**: Lock-free multi-producer communication
+- **IoT Data Ingestion**: High-volume concurrent sensor processing
+- **Game Engines**: Multi-threaded entity processing
 
 ## API Reference
 
-### Core Methods
+### Core Operations
+```go
+// Write to buffer (single producer per ring)
+func (z *Zephyros[T]) Write(writerFunc func(*T)) bool
 
-#### NewOperationPool
-Creates a new operation pool with the specified configuration.
+// Process batch with dynamic sizing
+func (z *Zephyros[T]) ProcessBatch() int
+
+// Continuous processing loop
+func (z *Zephyros[T]) LoopProcess()
+```
+
+### ThreadedZephyros
+```go
+// Multi-ring builder
+func NewThreadedBuilder[T any](capacity int64, numRings int) *ThreadedBuilder[T]
+
+// Write to specific ring
+func (t *ThreadedZephyros[T]) Write(ringID int, writerFunc func(*T)) bool
+```
+
+**📚 Complete API Documentation**: [pkg.go.dev/github.com/agilira/zephyros](https://pkg.go.dev/github.com/agilira/zephyros)
+
+## Performance Tuning
 
 ```go
-func NewOperationPool(config PoolConfig, handler OperationHandler) (*OperationPool, error)
+// Latency optimized
+WithBatchSize(1)     // Immediate processing
+
+// Balanced (with adaptive batching)  
+WithBatchSize(32)    // Auto-adapts to load
+
+// Throughput optimized
+WithBatchSize(256)   // Amortize overhead
 ```
 
-#### Submit
-Submits a single operation for processing.
+## Best Practices
 
-```go
-func (p *OperationPool) Submit(ctx context.Context, op Operation) error
-```
+### Do's ✅
+- Use ThreadedZephyros for multiple producers
+- Leverage dynamic adaptive batching
+- Monitor backpressure signals
+- Use power-of-2 capacities
 
-#### SubmitAsync
-Submits an operation asynchronously and returns immediately.
+### Don'ts ❌
+- Multiple producers on single ring
+- Multiple consumers
+- Blocking operations in processor
 
-```go
-func (p *OperationPool) SubmitAsync(ctx context.Context, op Operation) (*AsyncResult, error)
-```
+## The Philosophy Behind Zephyros
 
-#### SubmitBatch
-Submits multiple operations as a batch.
+In Greek mythology, Zephyros was the god of the west wind, known for bringing gentle breezes and enabling swift travel. Unlike chaotic storms, Zephyros represented controlled power—the ability to provide exactly the right amount of force when needed.
 
-```go
-func (p *OperationPool) SubmitBatch(ctx context.Context, operations []Operation) error
-```
+This embodies Zephyros' design philosophy: controlled multi-producer performance through intelligent architecture. The MPSC design provides gentle, predictable throughput patterns, while dynamic adaptive batching ensures the system provides exactly the right processing intensity for current load conditions. ThreadedZephyros enables swift scaling across multiple producers without the chaos of lock contention.
 
-#### GetResult
-Retrieves the next available result.
+Zephyros doesn't just move data fast—it moves it intelligently, adapting to conditions while maintaining the reliability that production systems demand.
 
-```go
-func (p *OperationPool) GetResult(ctx context.Context) (OperationResult, error)
-```
+## Documentation
 
-#### GetResults
-Retrieves multiple results at once.
-
-```go
-func (p *OperationPool) GetResults(ctx context.Context, count int) ([]OperationResult, error)
-```
-
-### Monitoring and Metrics
-
-#### GetMetrics
-Returns current pool metrics.
-
-```go
-func (p *OperationPool) GetMetrics() PoolMetrics
-```
-
-#### GetHealthStatus
-Returns current health status.
-
-```go
-func (p *OperationPool) GetHealthStatus() HealthStatus
-```
-
-#### GetCacheStats
-Returns cache statistics.
-
-```go
-func (p *OperationPool) GetCacheStats() CacheStats
-```
-
-#### ResetMetrics
-Resets all metrics to zero.
-
-```go
-func (p *OperationPool) ResetMetrics()
-```
-
-### Lifecycle Management
-
-#### Close
-Gracefully shuts down the operation pool.
-
-```go
-func (p *OperationPool) Close() error
-```
-
-#### IsClosed
-Checks if the pool is closed.
-
-```go
-func (p *OperationPool) IsClosed() bool
-```
-
-## Data Structures
-
-### Operation
-Represents a single operation to be processed:
-
-```go
-type Operation struct {
-    Type      string                 // Operation type
-    Key       string                 // Operation key
-    Value     string                 // Operation value
-    Tags      []string               // Operation tags
-    Metadata  map[string]interface{} // Additional metadata
-    Timestamp time.Time              // Operation timestamp
-    ID        string                 // Unique operation ID
-    Status    OperationStatus        // Current status
-    Result    OperationResult        // Operation result
-    Error     string                 // Error message
-    WorkerID  int                    // Worker ID
-    StartTime time.Time              // Processing start time
-    EndTime   time.Time              // Processing end time
-    RetryCount int                   // Retry count
-    Priority   int                   // Operation priority
-    Deadline   time.Time             // Operation deadline
-    TraceID    string                // Trace ID for observability
-}
-```
-
-### OperationResult
-Contains the result of a processed operation:
-
-```go
-type OperationResult struct {
-    OperationID    string                 // Original operation ID
-    Success        bool                   // Success status
-    Data           interface{}            // Result data
-    Error          error                  // Error if failed
-    Duration       time.Duration          // Processing duration
-    Metadata       map[string]interface{} // Result metadata
-    RetryCount     int                    // Number of retries
-    TraceID        string                 // Trace ID
-    ProcessingTime time.Time              // Processing timestamp
-}
-```
-
-### PoolMetrics
-Contains performance metrics for the operation pool:
-
-```go
-type PoolMetrics struct {
-    ActiveWorkers   int           // Number of active workers
-    QueueLength     int           // Current queue length
-    ProcessedOps    int64         // Total processed operations
-    FailedOps       int64         // Total failed operations
-    AverageDuration time.Duration // Average processing duration
-    LastReset       time.Time     // Last metrics reset time
-    PoolHits        int64         // Object pool hits
-    PoolMisses      int64         // Object pool misses
-    RetryCount      int64         // Total retry count
-    RateLimitDrops  int64         // Rate limited operations
-    ValidationErrors int64        // Validation errors
-    P50Latency      time.Duration // 50th percentile latency
-    P95Latency      time.Duration // 95th percentile latency
-    P99Latency      time.Duration // 99th percentile latency
-    Throughput      float64       // Operations per second
-    MemoryUsage     int64         // Memory usage in bytes
-}
-```
-
-## Error Handling
-
-The library provides comprehensive error handling with specific error types:
-
-```go
-var (
-    ErrPoolClosed       = errors.New("zephyros: operation pool is closed")
-    ErrBatchTimeout     = errors.New("zephyros: batch processing timeout")
-    ErrCacheDisabled    = errors.New("zephyros: caching is not enabled")
-    ErrContextNil       = errors.New("zephyros: context cannot be nil")
-    ErrResultTimeout    = errors.New("zephyros: result retrieval timeout")
-    ErrInvalidConfig    = errors.New("zephyros: invalid configuration")
-    ErrTimeout          = errors.New("zephyros: operation timeout")
-    ErrContextCancelled = errors.New("zephyros: context cancelled")
-    ErrQueueFull        = errors.New("zephyros: operation queue is full")
-    ErrValidationFailed = errors.New("zephyros: operation validation failed")
-    ErrRateLimited      = errors.New("zephyros: operation rate limited")
-)
-```
-
-## Performance Considerations
-
-### Worker Count Optimization
-- **CPU-bound operations**: Use `runtime.NumCPU()` or `runtime.NumCPU() * 2`
-- **I/O-bound operations**: Use `runtime.NumCPU() * 4` or higher
-- **Mixed workloads**: Use `runtime.NumCPU() * 2`
-
-### Queue Size Configuration
-- **High throughput**: Use larger queues (1000-10000)
-- **Memory constrained**: Use smaller queues (100-500)
-- **Balanced**: Use `WorkerCount * 50` as default
-
-### Batch Processing
-Use batch processing for:
-- High-frequency operations (>1000 ops/sec)
-- Network operations (HTTP, database)
-- Operations with similar processing time
-- Bulk data processing
-
-### Caching Strategy
-- Cache expensive computations
-- Cache external API responses
-- Cache database query results
-- Use appropriate TTL based on data volatility
-
-## Testing
-
-The library includes comprehensive tests covering:
-- Unit tests for all components
-- Integration tests for complete workflows
-- Concurrent stress tests
-- Edge case handling
-- Error scenarios
-- Performance benchmarks
-
-Run tests with:
-
-```bash
-go test -v
-go test -cover
-go test -bench=.
-```
-
-## Examples
-
-See the `examples/` directory for complete working examples demonstrating:
-- Basic usage patterns
-- Advanced configuration
-- Performance optimization
-- Error handling
-- Monitoring and metrics
-
-## Benchmarks
-
-See the `benchmarks/` directory for performance benchmarks covering:
-- Single operation processing
-- Batch processing performance
-- Concurrent operation handling
-- Memory usage patterns
-- Cache performance
+**Quick Links:**
+- **[Quick Start Guide](./docs/QUICK_START.md)** - Get running in 2 minutes 🚀
+- **[API Reference](https://pkg.go.dev/github.com/agilira/zephyros)** - Complete API documentation on pkg.go.dev
+- **[Test Coverage Report](./coverage.html)** - Detailed coverage analysis (94.3%)
+- **[Architecture Guide](./docs/ARCHITECTURE.md)** - Deep dive into MPSC design and Gemini Strategy
+- **[ThreadedZephyros API](./docs/THREADED_API.md)** - Multi-ring API with Fast/Safe path documentation
+- **[Dynamic Batching](./docs/DYNAMIC_BATCHING.md)** - Intelligent batch size adaptation explained
+- **[Best Practices](./docs/BEST_PRACTICES.md)** - Production deployment patterns and optimization guide
 
 ## License
 
-Copyright (c) 2025 AGILira
-Licensed under the Business Source License (BSL). Change Date: NEVER
+Zephyros is licensed under the [Mozilla Public License 2.0](./LICENSE).
 
-See LICENSE file in the project root for full license information.
+---
+
+Zephyros • an AGILira fragment

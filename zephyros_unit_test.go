@@ -1,606 +1,481 @@
-// zephyros_unit_test.go: Unit tests for zephyros core functionality
+// zephyros.go: Unit tests for ultra-high performance MPSC lock-free ring buffer
 //
 // Copyright (c) 2025 AGILira
-// Licensed under the Business Source License (BSL). Change Date: NEVER
+// Series: an AGLIra fragment
+// SPDX-License-Identifier: MPL-2.0
 
 package zephyros
 
 import (
-	"context"
-	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// mockHandler implements OperationHandler for testing
-type mockHandler struct {
-	processFunc func(ctx context.Context, op Operation) (OperationResult, error)
-}
-
-func (m *mockHandler) Process(ctx context.Context, op Operation) (OperationResult, error) {
-	if m.processFunc != nil {
-		return m.processFunc(ctx, op)
+// TestZephyros_Flush tests the Flush method
+func TestZephyros_Flush(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
 	}
-	return OperationResult{
-		OperationID: op.ID,
-		Success:     true,
-		Data:        op.Value,
-		Duration:    time.Millisecond,
-	}, nil
+
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(16).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
+	}
+	defer zephyros.Close()
+
+	// Write some items
+	for i := 0; i < 5; i++ {
+		success := zephyros.Write(func(slot *int) {
+			*slot = i
+		})
+		if !success {
+			t.Errorf("Write %d should succeed", i)
+		}
+	}
+
+	// Test Flush method - should complete without error
+	// Note: In MPSC, Flush is a no-op as writes are automatically committed
+	zephyros.Flush()
+
+	t.Logf("✅ Flush unit test passed - method executed without error")
 }
 
-func TestNewOperationPool_Unit(t *testing.T) {
-	t.Run("valid_configuration", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:   4,
-			QueueSize:     100,
-			EnableMetrics: true,
+// TestZephyros_TryProcessBatch tests the TryProcessBatch method
+func TestZephyros_TryProcessBatch(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
+	}
+
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(16).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
+	}
+	defer zephyros.Close()
+
+	// Test TryProcessBatch with empty buffer
+	count := zephyros.TryProcessBatch()
+	if count != 0 {
+		t.Errorf("Expected 0 items processed from empty buffer, got %d", count)
+	}
+
+	// Write some items
+	itemsWritten := 0
+	for i := 0; i < 10; i++ {
+		success := zephyros.Write(func(slot *int) {
+			*slot = i
+		})
+		if success {
+			itemsWritten++
 		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if itemsWritten == 0 {
+		t.Fatal("Should have written at least some items")
+	}
+
+	// Test TryProcessBatch with items
+	count = zephyros.TryProcessBatch()
+	if count == 0 {
+		t.Error("Expected some items to be processed")
+	}
+
+	t.Logf("✅ TryProcessBatch unit test: processed %d items", count)
+}
+
+// TestZephyros_LoopProcess tests the LoopProcess method
+func TestZephyros_LoopProcess(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
+	}
+
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(16).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
+	}
+
+	// Start LoopProcess in background goroutine
+	go zephyros.LoopProcess()
+
+	// Write some items
+	itemsWritten := 0
+	for i := 0; i < 20; i++ {
+		success := zephyros.Write(func(slot *int) {
+			*slot = i
+		})
+		if success {
+			itemsWritten++
 		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created")
+	}
+
+	if itemsWritten == 0 {
+		t.Fatal("Should have written at least some items")
+	}
+
+	// Wait for background processing
+	time.Sleep(time.Millisecond * 100)
+
+	// Stop LoopProcess by closing
+	zephyros.Close()
+
+	// Check that some processing occurred
+	processedCount := atomic.LoadInt64(&processed)
+	if processedCount == 0 {
+		t.Error("LoopProcess should have processed some items")
+	}
+
+	t.Logf("✅ LoopProcess unit test: processed %d items", processedCount)
+}
+
+// TestZephyros_Write_BufferFull tests Write behavior when buffer is full
+func TestZephyros_Write_BufferFull(t *testing.T) {
+	// Use very small buffer for easy testing
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
+		// Slow processing to fill buffer
+		time.Sleep(time.Millisecond)
+	}
+
+	zephyros, err := NewBuilder[int](4). // Very small buffer
+						WithProcessor(processor).
+						WithBatchSize(1).
+						Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
+	}
+	defer zephyros.Close()
+
+	// Fill buffer beyond capacity
+	successCount := 0
+	failCount := 0
+
+	for i := 0; i < 10; i++ {
+		success := zephyros.Write(func(slot *int) {
+			*slot = i
+		})
+		if success {
+			successCount++
+		} else {
+			failCount++
 		}
+	}
+
+	// Should have some successes and some failures due to buffer full
+	if successCount == 0 {
+		t.Error("Should have had at least some successful writes")
+	}
+
+	if failCount == 0 {
+		t.Error("Should have had some failed writes due to buffer full")
+	}
+
+	t.Logf("✅ Buffer full test: %d successful, %d failed writes", successCount, failCount)
+}
+
+// TestZephyros_Write_ClosedBuffer tests Write behavior on closed buffer
+func TestZephyros_Write_ClosedBuffer(t *testing.T) {
+	processor := func(item *int) {}
+
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(16).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
+	}
+
+	// Close the buffer first
+	zephyros.Close()
+
+	// Attempt write to closed buffer - should fail
+	success := zephyros.Write(func(slot *int) {
+		*slot = 42
 	})
 
-	t.Run("zero_worker_count", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:   0,
-			QueueSize:     100,
-			EnableMetrics: true,
-		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error for zero worker count, got %v", err)
-		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created with default worker count")
-		}
-		if pool.config.WorkerCount <= 0 {
-			t.Errorf("Expected default worker count > 0, got %d", pool.config.WorkerCount)
-		}
-	})
+	if success {
+		t.Error("Write to closed buffer should fail")
+	}
 
-	t.Run("negative_worker_count", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:   -5,
-			QueueSize:     100,
-			EnableMetrics: true,
-		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error for negative worker count, got %v", err)
-		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created with default worker count")
-		}
-		if pool.config.WorkerCount <= 0 {
-			t.Errorf("Expected default worker count > 0, got %d", pool.config.WorkerCount)
-		}
-	})
-
-	t.Run("zero_queue_size", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:   4,
-			QueueSize:     0,
-			EnableMetrics: true,
-		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error for zero queue size, got %v", err)
-		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created with default queue size")
-		}
-		if pool.config.QueueSize <= 0 {
-			t.Errorf("Expected default queue size > 0, got %d", pool.config.QueueSize)
-		}
-	})
-
-	t.Run("negative_queue_size", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:   4,
-			QueueSize:     -10,
-			EnableMetrics: true,
-		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error for negative queue size, got %v", err)
-		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created with default queue size")
-		}
-		if pool.config.QueueSize <= 0 {
-			t.Errorf("Expected default queue size > 0, got %d", pool.config.QueueSize)
-		}
-	})
-
-	t.Run("default_timeouts", func(t *testing.T) {
-		config := PoolConfig{
-			WorkerCount:     4,
-			QueueSize:       100,
-			EnableMetrics:   true,
-			MaxWaitTime:     0,
-			ShutdownTimeout: 0,
-		}
-		pool, err := NewOperationPool(config, nil)
-		if err != nil {
-			t.Fatalf("Expected no error for zero timeouts, got %v", err)
-		}
-		if pool == nil {
-			t.Fatal("Expected pool to be created with default timeouts")
-		}
-		if pool.config.MaxWaitTime <= 0 {
-			t.Errorf("Expected default MaxWaitTime > 0, got %v", pool.config.MaxWaitTime)
-		}
-		if pool.config.ShutdownTimeout <= 0 {
-			t.Errorf("Expected default ShutdownTimeout > 0, got %v", pool.config.ShutdownTimeout)
-		}
-	})
+	t.Logf("✅ Closed buffer write test passed")
 }
 
-func TestOperationPool_Submit_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
+// TestZephyros_ProcessBatch_Coverage tests ProcessBatch method for coverage
+func TestZephyros_ProcessBatch_Coverage(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
 	}
-	handler := &mockHandler{}
-	pool, err := NewOperationPool(config, handler)
+
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(8).
+		Build()
+
 	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
+		t.Fatalf("Failed to build: %v", err)
 	}
-	defer pool.Close()
+	defer zephyros.Close()
 
-	// Test valid operation submission
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
-
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Errorf("Submit() error = %v", err)
+	// Write items
+	for i := 0; i < 15; i++ {
+		zephyros.Write(func(slot *int) {
+			*slot = i
+		})
 	}
 
-	// Test operation with empty ID (should be auto-generated)
-	op2 := Operation{
-		Type:  "test2",
-		Key:   "test_key2",
-		Value: "test_value2",
+	// Process batch
+	count := zephyros.ProcessBatch()
+	if count == 0 {
+		t.Error("ProcessBatch should have processed items")
 	}
 
-	err = pool.Submit(ctx, op2)
-	if err != nil {
-		t.Errorf("Submit() with empty ID error = %v", err)
-	}
-
-	// Test operation with zero timestamp (should be auto-set)
-	op3 := Operation{
-		Type:  "test3",
-		Key:   "test_key3",
-		Value: "test_value3",
-	}
-
-	err = pool.Submit(ctx, op3)
-	if err != nil {
-		t.Errorf("Submit() with zero timestamp error = %v", err)
-	}
+	t.Logf("✅ ProcessBatch coverage test: processed %d items", count)
 }
 
-func TestOperationPool_GetResult_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
-	}
+// TestZephyros_Stats_Coverage tests Stats method for coverage
+func TestZephyros_Stats_Coverage(t *testing.T) {
+	processor := func(item *int) {}
 
-	handler := &mockHandler{
-		processFunc: func(ctx context.Context, op Operation) (OperationResult, error) {
-			return OperationResult{
-				OperationID: op.ID,
-				Success:     true,
-				Data:        op.Value,
-				Duration:    time.Millisecond,
-			}, nil
-		},
-	}
+	zephyros, err := NewBuilder[int](128).
+		WithProcessor(processor).
+		WithBatchSize(32).
+		Build()
 
-	pool, err := NewOperationPool(config, handler)
 	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
+		t.Fatalf("Failed to build: %v", err)
 	}
-	defer pool.Close()
+	defer zephyros.Close()
 
-	// Submit an operation
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
-
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
+	// Write some items
+	for i := 0; i < 10; i++ {
+		zephyros.Write(func(slot *int) {
+			*slot = i
+		})
 	}
 
-	// Get result
-	result, err := pool.GetResult(ctx)
-	if err != nil {
-		t.Errorf("GetResult() error = %v", err)
+	// Get stats
+	stats := zephyros.Stats()
+	if stats == nil {
+		t.Error("Stats should not be nil")
 	}
 
-	if !result.Success {
-		t.Error("Expected successful result")
+	// Check expected fields
+	if _, exists := stats["buffer_size"]; !exists {
+		t.Error("Stats should contain 'buffer_size' field")
 	}
 
-	if result.OperationID == "" {
-		t.Error("Expected operation ID to be set")
+	if _, exists := stats["writer_position"]; !exists {
+		t.Error("Stats should contain 'writer_position' field")
 	}
 
-	if result.Data != op.Value {
-		t.Errorf("Expected data %s, got %v", op.Value, result.Data)
+	if _, exists := stats["reader_position"]; !exists {
+		t.Error("Stats should contain 'reader_position' field")
 	}
+
+	if _, exists := stats["items_buffered"]; !exists {
+		t.Error("Stats should contain 'items_buffered' field")
+	}
+
+	if _, exists := stats["closed"]; !exists {
+		t.Error("Stats should contain 'closed' field")
+	}
+
+	t.Logf("✅ Stats coverage test passed: %v", stats)
 }
 
-func TestOperationPool_GetMetrics_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
-		BatchConfig: BatchConfig{
-			EnableBatchProcessing: true,
-			BatchSize:             5,
-			BatchTimeout:          50 * time.Millisecond,
-			FlushInterval:         25 * time.Millisecond,
-		},
+// TestZephyros_LoopProcess_EdgeCases tests LoopProcess edge cases for better coverage
+func TestZephyros_LoopProcess_EdgeCases(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
+		time.Sleep(time.Microsecond) // Small delay
 	}
 
-	handler := &mockHandler{
-		processFunc: func(ctx context.Context, op Operation) (OperationResult, error) {
-			// Simulate processing time
-			time.Sleep(5 * time.Millisecond)
-			return OperationResult{
-				OperationID: op.ID,
-				Success:     true,
-				Data:        op.Value,
-				Duration:    time.Millisecond,
-			}, nil
-		},
-	}
+	zephyros, err := NewBuilder[int](128).
+		WithProcessor(processor).
+		WithBatchSize(32).
+		Build()
 
-	pool, err := NewOperationPool(config, handler)
 	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-	defer pool.Close()
-
-	// Get initial metrics
-	metrics := pool.GetMetrics()
-	if metrics.ActiveWorkers != 0 {
-		t.Errorf("Expected 0 active workers initially, got %d", metrics.ActiveWorkers)
+		t.Fatalf("Failed to build: %v", err)
 	}
 
-	if metrics.ProcessedOps != 0 {
-		t.Errorf("Expected 0 processed operations initially, got %d", metrics.ProcessedOps)
-	}
+	// Test LoopProcess with concurrent writes
+	go zephyros.LoopProcess()
 
-	// Submit and process an operation
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
+	// Write items concurrently to test different LoopProcess paths
+	done := make(chan bool, 3)
 
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
-	}
-
-	// Wait for processing to complete with smart polling
-	maxWait := 2 * time.Second
-	interval := 20 * time.Millisecond
-	waited := time.Duration(0)
-
-	for waited < maxWait {
-		metrics = pool.GetMetrics()
-		if metrics.ProcessedOps >= 1 {
-			break
+	// Writer 1
+	go func() {
+		for i := 0; i < 30; i++ {
+			zephyros.Write(func(slot *int) { *slot = i })
+			time.Sleep(time.Microsecond * 10)
 		}
-		time.Sleep(interval)
-		waited += interval
+		done <- true
+	}()
+
+	// Writer 2
+	go func() {
+		for i := 100; i < 130; i++ {
+			zephyros.Write(func(slot *int) { *slot = i })
+			time.Sleep(time.Microsecond * 15)
+		}
+		done <- true
+	}()
+
+	// Writer 3
+	go func() {
+		for i := 200; i < 220; i++ {
+			zephyros.Write(func(slot *int) { *slot = i })
+			time.Sleep(time.Microsecond * 5)
+		}
+		done <- true
+	}()
+
+	// Wait for all writers
+	for i := 0; i < 3; i++ {
+		<-done
 	}
 
-	if metrics.ProcessedOps < 1 {
-		t.Errorf("Expected at least 1 processed operation after %v, got %d", waited, metrics.ProcessedOps)
+	// Allow processing to complete
+	time.Sleep(time.Millisecond * 100)
+	zephyros.Close()
+
+	processedCount := atomic.LoadInt64(&processed)
+	if processedCount == 0 {
+		t.Error("LoopProcess should have processed items")
 	}
 
-	if metrics.FailedOps != 0 {
-		t.Errorf("Expected 0 failed operations, got %d", metrics.FailedOps)
-	}
+	t.Logf("✅ LoopProcess edge cases: processed %d items", processedCount)
 }
 
-func TestOperationPool_ResetMetrics_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
+// TestZephyros_Write_ConcurrentStress tests Write method under concurrent stress
+func TestZephyros_Write_ConcurrentStress(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
 	}
-	pool, err := NewOperationPool(config, nil)
-	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-	// Simulate some metrics
-	pool.metrics.ProcessedOps = 5
-	pool.metrics.FailedOps = 2
-	pool.metrics.AverageDuration = 123
-	pool.metrics.PoolHits = 3
-	pool.metrics.PoolMisses = 1
 
-	pool.ResetMetrics()
-	metrics := pool.GetMetrics()
-	if metrics.ProcessedOps != 0 || metrics.FailedOps != 0 || metrics.AverageDuration != 0 || metrics.PoolHits != 0 || metrics.PoolMisses != 0 {
-		t.Errorf("Expected all metrics to be reset to zero, got ProcessedOps=%d, FailedOps=%d, AverageDuration=%d, PoolHits=%d, PoolMisses=%d",
-			metrics.ProcessedOps, metrics.FailedOps, metrics.AverageDuration, metrics.PoolHits, metrics.PoolMisses)
+	zephyros, err := NewBuilder[int](256).
+		WithProcessor(processor).
+		WithBatchSize(64).
+		Build()
+
+	if err != nil {
+		t.Fatalf("Failed to build: %v", err)
 	}
+	defer zephyros.Close()
+
+	go zephyros.LoopProcess()
+
+	// Stress test Write method with many concurrent writers
+	numWriters := 10
+	itemsPerWriter := 50
+	done := make(chan bool, numWriters)
+
+	for writerID := 0; writerID < numWriters; writerID++ {
+		go func(id int) {
+			successCount := 0
+			for i := 0; i < itemsPerWriter; i++ {
+				success := zephyros.Write(func(slot *int) {
+					*slot = id*1000 + i
+				})
+				if success {
+					successCount++
+				}
+				// Random tiny delays to create different write patterns
+				if i%10 == 0 {
+					time.Sleep(time.Nanosecond * 100)
+				}
+			}
+			t.Logf("Writer %d: %d successful writes", id, successCount)
+			done <- true
+		}(writerID)
+	}
+
+	// Wait for all writers
+	for i := 0; i < numWriters; i++ {
+		<-done
+	}
+
+	time.Sleep(time.Millisecond * 150)
+
+	processedCount := atomic.LoadInt64(&processed)
+	if processedCount == 0 {
+		t.Error("Concurrent writes should result in some processing")
+	}
+
+	t.Logf("✅ Write concurrent stress: processed %d items", processedCount)
 }
 
-func TestOperationPool_Close_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
+// TestZephyros_ProcessBatch_EdgeCases tests ProcessBatch edge cases
+func TestZephyros_ProcessBatch_EdgeCases(t *testing.T) {
+	processed := int64(0)
+	processor := func(item *int) {
+		atomic.AddInt64(&processed, 1)
 	}
 
-	handler := &mockHandler{}
-	pool, err := NewOperationPool(config, handler)
+	zephyros, err := NewBuilder[int](64).
+		WithProcessor(processor).
+		WithBatchSize(8).
+		Build()
+
 	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
+		t.Fatalf("Failed to build: %v", err)
+	}
+	defer zephyros.Close()
+
+	// Test ProcessBatch with different buffer states
+
+	// 1. Empty buffer
+	count1 := zephyros.ProcessBatch()
+	if count1 != 0 {
+		t.Errorf("Empty buffer should process 0 items, got %d", count1)
 	}
 
-	// Verify pool is not closed initially
-	if pool.IsClosed() {
-		t.Error("Pool should not be closed initially")
+	// 2. Single item
+	zephyros.Write(func(slot *int) { *slot = 1 })
+	count2 := zephyros.ProcessBatch()
+	if count2 == 0 {
+		t.Error("Should process at least 1 item")
 	}
 
-	// Close the pool
-	err = pool.Close()
-	if err != nil {
-		t.Errorf("Close() error = %v", err)
+	// 3. Multiple items
+	for i := 0; i < 15; i++ {
+		zephyros.Write(func(slot *int) { *slot = i + 10 })
+	}
+	count3 := zephyros.ProcessBatch()
+	if count3 == 0 {
+		t.Error("Should process multiple items")
 	}
 
-	// Verify pool is closed
-	if !pool.IsClosed() {
-		t.Error("Pool should be closed after Close()")
+	// 4. Full batch
+	for i := 0; i < 20; i++ {
+		zephyros.Write(func(slot *int) { *slot = i + 100 })
+	}
+	count4 := zephyros.ProcessBatch()
+	if count4 == 0 {
+		t.Error("Should process full batch")
 	}
 
-	// Test double close (should not error)
-	err = pool.Close()
-	if err != nil {
-		t.Errorf("Double Close() should not error, got %v", err)
-	}
-}
-
-func TestOperationPool_IsClosed_Unit(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   2,
-		QueueSize:     10,
-		EnableMetrics: true,
-	}
-
-	handler := &mockHandler{}
-	pool, err := NewOperationPool(config, handler)
-	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
-	}
-
-	// Test initial state
-	if pool.IsClosed() {
-		t.Error("New pool should not be closed")
-	}
-
-	// Close and test
-	pool.Close()
-	if !pool.IsClosed() {
-		t.Error("Pool should be closed after Close()")
-	}
-}
-
-// TestOperationPool_DirectProcessing tests direct operation processing without batch processing
-func TestOperationPool_DirectProcessing(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   1,
-		QueueSize:     10,
-		EnableMetrics: true,
-		BatchConfig: BatchConfig{
-			EnableBatchProcessing: false, // Disable batch processing to test direct processing
-		},
-	}
-
-	handler := &mockHandler{
-		processFunc: func(ctx context.Context, op Operation) (OperationResult, error) {
-			return OperationResult{
-				OperationID: op.ID,
-				Success:     true,
-				Data:        op.Value,
-				Duration:    time.Millisecond,
-			}, nil
-		},
-	}
-
-	pool, err := NewOperationPool(config, handler)
-	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
-	}
-	defer pool.Close()
-
-	// Submit operation
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
-
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
-	}
-
-	// Get result
-	result, err := pool.GetResult(ctx)
-	if err != nil {
-		t.Fatalf("GetResult() error = %v", err)
-	}
-
-	if !result.Success {
-		t.Error("Expected successful operation")
-	}
-	if result.OperationID == "" {
-		t.Error("Expected operation ID to be set")
-	}
-
-	// Verify metrics
-	metrics := pool.GetMetrics()
-	if metrics.ProcessedOps < 1 {
-		t.Error("Expected at least 1 processed operation")
-	}
-}
-
-// TestOperationPool_ErrorHandling tests error handling in direct processing
-func TestOperationPool_ErrorHandling(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   1,
-		QueueSize:     10,
-		EnableMetrics: true,
-		BatchConfig: BatchConfig{
-			EnableBatchProcessing: false,
-		},
-	}
-
-	handler := &mockHandler{
-		processFunc: func(ctx context.Context, op Operation) (OperationResult, error) {
-			return OperationResult{}, fmt.Errorf("simulated error")
-		},
-	}
-
-	pool, err := NewOperationPool(config, handler)
-	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
-	}
-	defer pool.Close()
-
-	// Submit operation
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
-
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
-	}
-
-	// Get result
-	result, err := pool.GetResult(ctx)
-	if err != nil {
-		t.Fatalf("GetResult() error = %v", err)
-	}
-
-	if result.Success {
-		t.Error("Expected failed operation")
-	}
-	if result.Error == nil {
-		t.Error("Expected error in result")
-	}
-
-	// Verify metrics
-	metrics := pool.GetMetrics()
-	if metrics.ProcessedOps < 1 {
-		t.Error("Expected at least 1 processed operation")
-	}
-	if metrics.FailedOps < 1 {
-		t.Error("Expected at least 1 failed operation")
-	}
-}
-
-// TestOperationPool_CacheIntegration tests cache integration in direct processing
-func TestOperationPool_CacheIntegration(t *testing.T) {
-	config := PoolConfig{
-		WorkerCount:   1,
-		QueueSize:     10,
-		EnableMetrics: true,
-		BatchConfig: BatchConfig{
-			EnableBatchProcessing: false,
-		},
-		CacheConfig: CacheConfig{
-			EnableCaching: true,
-			CacheSize:     100,
-			TTL:           1 * time.Second,
-		},
-	}
-
-	handler := &mockHandler{
-		processFunc: func(ctx context.Context, op Operation) (OperationResult, error) {
-			return OperationResult{
-				OperationID: op.ID,
-				Success:     true,
-				Data:        op.Value,
-				Duration:    time.Millisecond,
-			}, nil
-		},
-	}
-
-	pool, err := NewOperationPool(config, handler)
-	if err != nil {
-		t.Fatalf("Failed to create pool: %v", err)
-	}
-	defer pool.Close()
-
-	// Submit operation
-	op := Operation{
-		Type:  "test",
-		Key:   "test_key",
-		Value: "test_value",
-	}
-
-	ctx := context.Background()
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
-	}
-
-	// Get result
-	result, err := pool.GetResult(ctx)
-	if err != nil {
-		t.Fatalf("GetResult() error = %v", err)
-	}
-
-	if !result.Success {
-		t.Error("Expected successful operation")
-	}
-
-	// Submit same operation again to test cache
-	err = pool.Submit(ctx, op)
-	if err != nil {
-		t.Fatalf("Submit() error = %v", err)
-	}
-
-	// Get result from cache
-	result2, err := pool.GetResult(ctx)
-	if err != nil {
-		t.Fatalf("GetResult() error = %v", err)
-	}
-
-	if !result2.Success {
-		t.Error("Expected successful operation from cache")
-	}
+	t.Logf("✅ ProcessBatch edge cases: processed batches of %d, %d, %d, %d items", count1, count2, count3, count4)
 }
