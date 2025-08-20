@@ -32,26 +32,19 @@ func TestSingleRing_Performance(t *testing.T) {
 	t.Logf("  Config: 1 ring, %d producers × %d messages = %d total",
 		numProducers, messagesPerProducer, totalMessages)
 
-	// Build single ring Zephyros
-	zephyros, err := NewBuilder[int](bufferSize).
+	// Build ThreadedZephyros for multiple producers
+	threaded, err := NewThreadedBuilder[int](bufferSize, numProducers).
 		WithProcessor(processor).
 		WithBatchSize(batchSize).
 		Build()
 
 	if err != nil {
-		t.Fatalf("Failed to build single Zephyros: %v", err)
+		t.Fatalf("Failed to build ThreadedZephyros: %v", err)
 	}
-	defer zephyros.Close()
+	defer threaded.Close()
 
 	// Start background processing
-	go func() {
-		for {
-			processed := zephyros.ProcessBatch()
-			if processed == 0 {
-				time.Sleep(time.Microsecond)
-			}
-		}
-	}()
+	go threaded.LoopProcess()
 
 	// WRITING PHASE
 	startTime := time.Now()
@@ -67,7 +60,7 @@ func TestSingleRing_Performance(t *testing.T) {
 			localWrites := int64(0)
 
 			for j := 0; j < messagesPerProducer; j++ {
-				if zephyros.Write(func(slot *int) {
+				if threaded.Write(producerID, func(slot *int) {
 					*slot = j
 				}) {
 					localWrites++
@@ -110,7 +103,7 @@ func TestSingleRing_Performance(t *testing.T) {
 	t.Logf("  Throughput: %.0f ops/sec", throughput)
 
 	// Get final stats
-	stats := zephyros.Stats()
+	stats := threaded.Stats()
 	t.Logf("  Final stats: %+v", stats)
 
 	t.Logf("BASELINE: %.0f ops/sec", throughput)

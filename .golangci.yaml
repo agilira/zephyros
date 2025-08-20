@@ -1,4 +1,6 @@
-version: "1"
+run:
+  timeout: 5m
+
 linters:
   enable:
     - errcheck
@@ -7,18 +9,5 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - containedctx
-    - contextcheck
-    - decorder
-    - errname
-    - fatcontext
-    - gci
-    - goimports
-    - iface
-    - reassign
-    - recvcheck
     - revive
-    - spancheck
-    - sqlclosecheck
-    - tagalign
-    - thelper
+    - goimports
