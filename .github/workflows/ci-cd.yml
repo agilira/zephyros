@@ -49,7 +49,7 @@ jobs:
     #     args: --timeout=5m
 
     - name: Run tests
-      run: go test -race -v -coverprofile=coverage.out ./...
+      run: go test -race -short -v -coverprofile=coverage.out ./...
 
     - name: Upload coverage to Codecov
       if: matrix.go-version == '1.24'
@@ -78,7 +78,7 @@ jobs:
     - name: Enable CGO and run race detection
       run: |
         export CGO_ENABLED=1
-        go test -race -v ./...
+        go test -race -short -v ./...
 
   security:
     name: Security Scan

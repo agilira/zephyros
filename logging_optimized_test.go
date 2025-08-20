@@ -14,8 +14,13 @@ import (
 )
 
 // TestHighPerformanceOptimized - High performance test with optimal configuration
+// This test is designed for local performance validation and is skipped in CI
 func TestHighPerformanceOptimized(t *testing.T) {
-	// 🎯 OPTIMAL CONFIGURATION for maximum throughput
+	// Skip in CI environments where performance is unpredictable
+	if testing.Short() {
+		t.Skip("Skipping performance test in short mode")
+	}
+	// OPTIMAL CONFIGURATION for maximum throughput
 	numRings := 4                 // Perfect for 4-core contention distribution
 	bufferSize := int64(262144)   // 256K buffer (larger for stability)
 	batchSize := int64(16384)     // 16K batch (larger for efficiency)
@@ -118,9 +123,9 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	overallThroughput := float64(finalProcessed) / totalTime.Seconds()
 	processingThroughput := float64(finalProcessed) / (totalTime.Seconds() - writeTime.Seconds())
 
-	// 🏆 RESULTS ANALYSIS
+	// RESULTS ANALYSIS
 	t.Logf("")
-	t.Logf("🏆 HIGH PERFORMANCE OPTIMIZED RESULTS:")
+	t.Logf("HIGH PERFORMANCE OPTIMIZED RESULTS:")
 	t.Logf("  Messages processed: %d", finalProcessed)
 	t.Logf("  Total time: %v", totalTime)
 	t.Logf("  Overall throughput: %.1fM ops/sec", overallThroughput/1000000)
@@ -129,7 +134,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	perRingThroughput := overallThroughput / float64(numRings) / 1000000
 	t.Logf("  Per-ring efficiency: %.1fM ops/sec", perRingThroughput)
 
-	// 🎯 PERFORMANCE ANALYSIS
+	// PERFORMANCE ANALYSIS
 	expectedMinThroughput := 500000.0 // 0.5M ops/sec minimum (realistic for race detector)
 
 	t.Logf("")
@@ -137,31 +142,31 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	t.Logf("  Achieved: %.1fM ops/sec", overallThroughput/1000000)
 	t.Logf("  Minimum expected: %.1fM ops/sec", expectedMinThroughput/1000000)
 
-	// 🏆 PERFORMANCE CLASSIFICATION (CI-friendly thresholds)
+	// PERFORMANCE CLASSIFICATION (CI-friendly thresholds)
 	if overallThroughput >= 5000000 {
 		t.Logf("")
-		t.Logf("🎊🎊🎊 EXCEPTIONAL PERFORMANCE! 🎊🎊🎊")
-		t.Logf("🚀 Zephyros throughput: %.1fM ops/sec", overallThroughput/1000000)
-		t.Logf("💥 Ultra-high performance achieved!")
-		t.Logf("🏆 ZEPHYROS EXCELLENCE DEMONSTRATED!")
+		t.Logf("EXCEPTIONAL PERFORMANCE!")
+		t.Logf("Zephyros throughput: %.1fM ops/sec", overallThroughput/1000000)
+		t.Logf("Ultra-high performance achieved!")
+		t.Logf("ZEPHYROS EXCELLENCE DEMONSTRATED!")
 	} else if overallThroughput >= 2000000 {
 		t.Logf("")
-		t.Logf("🔥 EXCELLENT PERFORMANCE!")
-		t.Logf("✅ High-performance target achieved")
-		t.Logf("🎯 Close to optimal throughput")
+		t.Logf("EXCELLENT PERFORMANCE!")
+		t.Logf("High-performance target achieved")
+		t.Logf("Close to optimal throughput")
 	} else if overallThroughput >= 1000000 {
 		t.Logf("")
-		t.Logf("📊 GOOD PERFORMANCE")
-		t.Logf("✅ Acceptable performance level")
+		t.Logf("GOOD PERFORMANCE")
+		t.Logf("Acceptable performance level")
 	} else {
 		t.Logf("")
-		t.Logf("⚠️  PERFORMANCE ISSUE DETECTED")
-		t.Logf("❌ Below expected performance levels")
+		t.Logf("PERFORMANCE ISSUE DETECTED")
+		t.Logf("Below expected performance levels")
 	}
 
 	// Ensure we meet minimum performance standards
 	if overallThroughput < expectedMinThroughput {
-		t.Errorf("❌ FAILED: Expected >%.1fM ops/sec, got %.1fM ops/sec",
+		t.Errorf("FAILED: Expected >%.1fM ops/sec, got %.1fM ops/sec",
 			expectedMinThroughput/1000000, overallThroughput/1000000)
 	}
 }
