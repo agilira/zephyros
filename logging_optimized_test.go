@@ -28,7 +28,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	messagesPerProducer := 100000 // 400K total messages (reasonable for CI)
 	totalMessages := numProducers * messagesPerProducer
 
-	t.Logf("🚀 HIGH PERFORMANCE OPTIMIZED TEST")
+	t.Logf("HIGH PERFORMANCE OPTIMIZED TEST")
 	t.Logf("  Target: Demonstrate Zephyros ultra-high performance capabilities")
 	t.Logf("  Config: %d rings × %d producers × %dK messages = %dK total",
 		numRings, numProducers, messagesPerProducer/1000, totalMessages/1000)
@@ -55,11 +55,11 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	threaded.LoopProcess()
 	time.Sleep(10 * time.Millisecond) // Let consumers stabilize
 
-	t.Logf("📊 BENCHMARK START")
+	t.Logf("BENCHMARK START")
 
 	startTime := time.Now()
 
-	// 🚀 ZERO-CONTENTION PRODUCERS: Each producer has dedicated ring
+	// ZERO-CONTENTION PRODUCERS: Each producer has dedicated ring
 	var wg sync.WaitGroup
 	successfulWrites := int64(0)
 
@@ -93,7 +93,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	wg.Wait()
 	writeTime := time.Since(startTime)
 
-	t.Logf("📝 WRITING PHASE COMPLETED:")
+	t.Logf("WRITING PHASE COMPLETED:")
 	t.Logf("  Successful writes: %d/%d (%.1f%%)",
 		successfulWrites, totalMessages, float64(successfulWrites)*100/float64(totalMessages))
 	t.Logf("  Write time: %v", writeTime)
@@ -101,7 +101,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	t.Logf("  Write throughput: %.1fM ops/sec", writeThroughput/1000000)
 
 	// 🏃‍♂️ PROCESSING PHASE: Wait for all processing to complete
-	t.Logf("⏳ PROCESSING PHASE:")
+	t.Logf("PROCESSING PHASE:")
 
 	for atomic.LoadInt64(&processed) < successfulWrites {
 		current := atomic.LoadInt64(&processed)
@@ -119,7 +119,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	totalTime := time.Since(startTime)
 	finalProcessed := atomic.LoadInt64(&processed)
 
-	// 📊 CALCULATE FINAL METRICS
+	// CALCULATE FINAL METRICS
 	overallThroughput := float64(finalProcessed) / totalTime.Seconds()
 	processingThroughput := float64(finalProcessed) / (totalTime.Seconds() - writeTime.Seconds())
 
@@ -138,7 +138,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	expectedMinThroughput := 500000.0 // 0.5M ops/sec minimum (realistic for race detector)
 
 	t.Logf("")
-	t.Logf("📊 PERFORMANCE ANALYSIS:")
+	t.Logf("PERFORMANCE ANALYSIS:")
 	t.Logf("  Achieved: %.1fM ops/sec", overallThroughput/1000000)
 	t.Logf("  Minimum expected: %.1fM ops/sec", expectedMinThroughput/1000000)
 

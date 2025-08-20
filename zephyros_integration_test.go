@@ -18,7 +18,7 @@ import (
 
 // TestZephyros_LoggingPipeline simulates a real logging pipeline
 func TestZephyros_LoggingPipeline(t *testing.T) {
-	t.Logf("🚀 END-TO-END LOGGING PIPELINE TEST")
+	t.Logf("END-TO-END LOGGING PIPELINE TEST")
 
 	// Simulate log entries
 	type LogEntry struct {
@@ -64,7 +64,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 	threaded.LoopProcess()
 	time.Sleep(10 * time.Millisecond) // Stabilize
 
-	t.Logf("📝 Simulating multi-threaded application logging...")
+	t.Logf("Simulating multi-threaded application logging...")
 
 	// Simulate 4 application threads logging concurrently
 	var wg sync.WaitGroup
@@ -108,7 +108,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 	wg.Wait()
 	writeTime := time.Since(startTime)
 
-	t.Logf("✅ Writing completed in %v", writeTime)
+	t.Logf("Writing completed in %v", writeTime)
 
 	// Wait for all processing to complete
 	for atomic.LoadInt64(&processedCount) < int64(totalLogs) {
@@ -124,7 +124,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 	processingMutex.Unlock()
 
 	t.Logf("")
-	t.Logf("🏆 LOGGING PIPELINE RESULTS:")
+	t.Logf("LOGGING PIPELINE RESULTS:")
 	t.Logf("  Expected logs: %d", totalLogs)
 	t.Logf("  Processed logs: %d", finalProcessed)
 	t.Logf("  Stored logs: %d", actualLogCount)
@@ -154,12 +154,12 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ LOGGING PIPELINE TEST PASSED - All logs processed correctly!")
+	t.Logf("LOGGING PIPELINE TEST PASSED - All logs processed correctly!")
 }
 
 // TestZephyros_EventProcessing simulates event processing system
 func TestZephyros_EventProcessing(t *testing.T) {
-	t.Logf("🎯 END-TO-END EVENT PROCESSING TEST")
+	t.Logf("END-TO-END EVENT PROCESSING TEST")
 
 	// Event types
 	type Event struct {
@@ -206,7 +206,7 @@ func TestZephyros_EventProcessing(t *testing.T) {
 	eventSystem.LoopProcess()
 	time.Sleep(10 * time.Millisecond)
 
-	t.Logf("📡 Simulating event ingestion from multiple sources...")
+	t.Logf("Simulating event ingestion from multiple sources...")
 
 	// Simulate event sources
 	eventTypes := []string{"user_click", "page_view", "purchase", "signup"}
@@ -251,7 +251,7 @@ func TestZephyros_EventProcessing(t *testing.T) {
 	wg.Wait()
 	ingestionTime := time.Since(startTime)
 
-	t.Logf("✅ Event ingestion completed in %v", ingestionTime)
+	t.Logf("Event ingestion completed in %v", ingestionTime)
 
 	// Wait for processing completion
 	for atomic.LoadInt64(&processedCount) < int64(totalEvents) {
@@ -273,14 +273,14 @@ func TestZephyros_EventProcessing(t *testing.T) {
 	eventMutex.Unlock()
 
 	t.Logf("")
-	t.Logf("🏆 EVENT PROCESSING RESULTS:")
+	t.Logf("EVENT PROCESSING RESULTS:")
 	t.Logf("  Expected events: %d", totalEvents)
 	t.Logf("  Processed events: %d", finalProcessed)
 	t.Logf("  Stored events: %d", actualEvents)
 	t.Logf("  Processing time: %v", totalTime)
 	t.Logf("  Throughput: %.1fM events/sec", float64(finalProcessed)/totalTime.Seconds()/1000000)
 
-	t.Logf("📊 Event type distribution:")
+	t.Logf("Event type distribution:")
 	for eventType, count := range typeCounts {
 		t.Logf("  %s: %d events", eventType, count)
 	}
@@ -355,7 +355,7 @@ func TestZephyros_WorkerPool(t *testing.T) {
 	workerPool.LoopProcess()
 	time.Sleep(10 * time.Millisecond)
 
-	t.Logf("👷 Submitting tasks to worker pool...")
+	t.Logf("Submitting tasks to worker pool...")
 
 	// Submit tasks
 	numTasks := 8000
@@ -424,7 +424,7 @@ func TestZephyros_WorkerPool(t *testing.T) {
 	taskMutex.Unlock()
 
 	t.Logf("")
-	t.Logf("🏆 WORKER POOL RESULTS:")
+	t.Logf("WORKER POOL RESULTS:")
 	t.Logf("  Expected tasks: %d", numTasks)
 	t.Logf("  Completed tasks: %d", finalCompleted)
 	t.Logf("  Verified tasks: %d", actualCompleted)
@@ -465,7 +465,7 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 		t.Skip("Skipping long-running stability test in short mode")
 	}
 
-	t.Logf("⏰ END-TO-END LONG-RUNNING STABILITY TEST")
+	t.Logf("END-TO-END LONG-RUNNING STABILITY TEST")
 
 	type Message struct {
 		ID        int64
@@ -546,7 +546,7 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 			case <-ticker.C:
 				current := atomic.LoadInt64(&processed)
 				rate := float64(current-lastProcessed) / 5.0 / 1000000
-				t.Logf("📊 Processed: %d (+%.1fM/sec)", current, rate)
+				t.Logf("Processed: %d (+%.1fM/sec)", current, rate)
 				lastProcessed = current
 
 				// Check system health
@@ -562,7 +562,7 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 	finalMessages := atomic.LoadInt64(&messageID)
 
 	t.Logf("")
-	t.Logf("🏆 STABILITY TEST RESULTS:")
+	t.Logf("STABILITY TEST RESULTS:")
 	t.Logf("  Messages sent: %d", finalMessages)
 	t.Logf("  Messages processed: %d", finalProcessed)
 	t.Logf("  Processing rate: %.1f%%", float64(finalProcessed)*100/float64(finalMessages))
@@ -571,7 +571,7 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 
 	// Final health check
 	stats := system.Stats()
-	t.Logf("📊 Final system stats: %+v", stats)
+	t.Logf("Final system stats: %+v", stats)
 
 	if finalProcessed == 0 {
 		t.Errorf("❌ No messages were processed")

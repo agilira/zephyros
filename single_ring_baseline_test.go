@@ -82,7 +82,7 @@ func TestSingleRing_Performance(t *testing.T) {
 	t.Logf("  Write throughput: %.0f ops/sec", writeThroughput)
 
 	// PROCESSING PHASE - wait for all messages to be processed
-	t.Logf("⏳ PROCESSING PHASE:")
+	t.Logf("PROCESSING PHASE:")
 
 	totalTime := time.Since(startTime)
 	for atomic.LoadInt64(&processed) < successfulWrites && totalTime < 5*time.Second {

@@ -60,7 +60,7 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	atomic.StoreInt64(&processed, 0)
 
 	// Phase 2: HIGH LOAD - Should use larger batches for throughput
-	t.Logf("📊 Phase 2: HIGH LOAD (sustained burst)")
+	t.Logf("Phase 2: HIGH LOAD (sustained burst)")
 	highLoadStart := time.Now()
 
 	var wg sync.WaitGroup
@@ -91,7 +91,7 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	atomic.StoreInt64(&processed, 0)
 
 	// Phase 3: MIXED LOAD - Variable bursts
-	t.Logf("📊 Phase 3: MIXED LOAD (variable patterns)")
+	t.Logf("Phase 3: MIXED LOAD (variable patterns)")
 	mixedLoadStart := time.Now()
 
 	for cycle := 0; cycle < 5; cycle++ {
@@ -124,11 +124,11 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	t.Logf("  Mixed load throughput: %.1fM ops/sec", float64(mixedLoadProcessed)/mixedLoadTime.Seconds()/1000000)
 
 	t.Logf("")
-	t.Logf("🏆 DYNAMIC BATCHING ANALYSIS:")
+	t.Logf("DYNAMIC BATCHING ANALYSIS:")
 	t.Logf("  ✅ Adapts to low load for latency optimization")
 	t.Logf("  ✅ Scales to high load for throughput optimization")
 	t.Logf("  ✅ Handles mixed patterns gracefully")
-	t.Logf("  🎯 Production-ready adaptive performance!")
+	t.Logf("  Production-ready adaptive performance!")
 }
 
 // TestDynamicBatching_LatencyBenchmark compares latency under different loads
@@ -145,7 +145,7 @@ func TestDynamicBatching_LatencyBenchmark(t *testing.T) {
 		{"Heavy Load", 10000, "Adaptive latency"},
 	}
 
-	t.Logf("🕒 LATENCY BENCHMARK - Dynamic vs Fixed Batching")
+	t.Logf("LATENCY BENCHMARK - Dynamic vs Fixed Batching")
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {

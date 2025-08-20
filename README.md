@@ -43,7 +43,7 @@ Gemini Strategy Architecture:
 
 Zephyros is engineered for multi-producer performance. The following benchmarks demonstrate sustained throughput of 100M+ ops/sec with zero memory allocations and dynamic adaptive batching.
 
-### AMD Ryzen 5 7520U with Radeon Graphics (8 cores)
+### AMD Ryzen 5 7520U
 ```
 BenchmarkThreadedZephyros_Baseline-8           374885246        9.548 ns/op    104.7M ops/sec      0 B/op    0 allocs/op
 BenchmarkThreadedZephyros_ProcessingThroughput-8 55866120       63.78 ns/op     15.7M complete/sec
