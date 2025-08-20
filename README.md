@@ -1,7 +1,8 @@
-# Zephyros: Ultra-High Performance MPSC Ring Buffer for Go
+# Zephyros: Blazing-Fast MPSC Ring Buffer for Go
 ### an AGILira fragment
 
-Zephyros is a lock-free, zero-allocation MPSC ring buffer for Go applications requiring extreme multi-producer throughput and minimal latency.
+Zephyros is a lock-free, zero-allocation MPSC (Multi-Producer, Single-Consumer) ring buffer for Go, engineered for applications that demand extreme throughput, predictable latency, and uncompromising efficiency under high concurrency.
+
 
 [![CI/CD Pipeline](https://github.com/agilira/zephyros/workflows/CI/CD%20Pipeline/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22CI%2FCD+Pipeline%22)
 [![Gosec Security](https://github.com/agilira/zephyros/workflows/Gosec%20Security/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22Gosec+Security%22)
@@ -193,8 +194,6 @@ func NewThreadedBuilder[T any](capacity int64, numRings int) *ThreadedBuilder[T]
 // Write to specific ring
 func (t *ThreadedZephyros[T]) Write(ringID int, writerFunc func(*T)) bool
 ```
-
-**📚 Complete API Documentation**: [pkg.go.dev/github.com/agilira/zephyros](https://pkg.go.dev/github.com/agilira/zephyros)
 
 ## Performance Tuning
 
