@@ -22,7 +22,7 @@ This is deliberate. In audit-critical systems, exposing knobs creates misconfigu
 - **Adaptive idle backoff** via EWMA tracking of processor speed
 - **Dynamic batch sizing** based on ring occupancy
 - **Graceful shutdown** with complete drain guarantee
-- **Multi-producer support** via ThreadedZephyros (N rings, unified consumer)
+- **Multi-producer support** via ThreadedZephyros (auto-scales to NumCPU rings)
 
 ## Installation
 
@@ -68,8 +68,12 @@ z, err := zephyros.NewBuilder[AuditEvent](0).
 
 ### Multi-Producer
 
+Pass `(0, 0)` -- Zephyros auto-sizes both ring capacity and ring count
+(defaults to `runtime.NumCPU()` rings). Each producer gets a `SafeWriter`
+bound to one ring. Zero contention between producers.
+
 ```go
-tz, err := zephyros.NewThreadedBuilder[Event](0, 4).
+tz, err := zephyros.NewThreadedBuilder[Event](0, 0).
     WithBatchProcessor(persistBatch).
     WithOnPoisonSkip(quarantine).
     Build()
@@ -79,7 +83,7 @@ if err != nil {
 
 done := tz.LoopProcess()
 
-w := tz.NewSafeWriter(0)
+w := tz.NewSafeWriter(0) // Bind producer to ring 0
 w.Write(func(slot *Event) { *slot = event })
 
 tz.Close()
