@@ -49,18 +49,24 @@ func TestSingleRing_Performance(t *testing.T) {
 	// WRITING PHASE
 	startTime := time.Now()
 
+	// One SafeWriter per ring, created before goroutines start.
+	writers := make([]*SafeWriter[int], numProducers)
+	for id := 0; id < numProducers; id++ {
+		writers[id] = threaded.NewSafeWriter(id)
+	}
+
 	var wg sync.WaitGroup
 	successfulWrites := int64(0)
 
 	for i := 0; i < numProducers; i++ {
 		wg.Add(1)
-		go func(producerID int) {
+		go func(w *SafeWriter[int]) {
 			defer wg.Done()
 
 			localWrites := int64(0)
 
 			for j := 0; j < messagesPerProducer; j++ {
-				if threaded.Write(producerID, func(slot *int) {
+				if w.Write(func(slot *int) {
 					*slot = j
 				}) {
 					localWrites++
@@ -68,7 +74,7 @@ func TestSingleRing_Performance(t *testing.T) {
 			}
 
 			atomic.AddInt64(&successfulWrites, localWrites)
-		}(i)
+		}(writers[i])
 	}
 
 	wg.Wait()

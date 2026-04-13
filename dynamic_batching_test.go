@@ -34,15 +34,22 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	threaded.LoopProcess()
 	time.Sleep(10 * time.Millisecond)
 
-	t.Logf("🎯 DYNAMIC BATCHING VARIABLE LOAD TEST")
+	// Four SafeWriters — one per ring. Created once and reused across all
+	// phases. Ownership enforcement is at assignment time (CAS), not per-write.
+	writers := make([]*SafeWriter[int], 4)
+	for id := 0; id < 4; id++ {
+		writers[id] = threaded.NewSafeWriter(id)
+	}
+
+	t.Logf("DYNAMIC BATCHING VARIABLE LOAD TEST")
 
 	// Phase 1: LOW LOAD - Should use smaller batches for low latency
-	t.Logf("📊 Phase 1: LOW LOAD (small bursts)")
+	t.Logf("Phase 1: LOW LOAD (small bursts)")
 	lowLoadStart := time.Now()
 
 	for burst := 0; burst < 10; burst++ {
 		for i := 0; i < 100; i++ { // Small bursts
-			threaded.Write(i%4, func(slot *int) {
+			writers[i%4].Write(func(slot *int) {
 				*slot = i
 			})
 		}
@@ -66,17 +73,17 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	var wg sync.WaitGroup
 	totalHighLoad := 500000
 
-	// Sustained high-speed writing
+	// Sustained high-speed writing — one goroutine per ring (SPSC invariant).
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		go func(ringID int) {
+		go func(w *SafeWriter[int]) {
 			defer wg.Done()
 			for j := 0; j < totalHighLoad/4; j++ {
-				threaded.Write(ringID, func(slot *int) {
+				w.Write(func(slot *int) {
 					*slot = j
 				})
 			}
-		}(i)
+		}(writers[i])
 	}
 
 	wg.Wait()
@@ -95,21 +102,21 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 	mixedLoadStart := time.Now()
 
 	for cycle := 0; cycle < 5; cycle++ {
-		// High burst
+		// High burst — one goroutine per ring.
 		for i := 0; i < 4; i++ {
-			go func(ringID int) {
+			go func(w *SafeWriter[int]) {
 				for j := 0; j < 10000; j++ {
-					threaded.Write(ringID, func(slot *int) {
+					w.Write(func(slot *int) {
 						*slot = j
 					})
 				}
-			}(i)
+			}(writers[i])
 		}
 		time.Sleep(10 * time.Millisecond)
 
-		// Low activity
+		// Low activity — single goroutine rotates across all rings.
 		for i := 0; i < 50; i++ {
-			threaded.Write(i%4, func(slot *int) {
+			writers[i%4].Write(func(slot *int) {
 				*slot = i
 			})
 		}
@@ -125,9 +132,9 @@ func TestDynamicBatching_VariableLoad(t *testing.T) {
 
 	t.Logf("")
 	t.Logf("DYNAMIC BATCHING ANALYSIS:")
-	t.Logf("  ✅ Adapts to low load for latency optimization")
-	t.Logf("  ✅ Scales to high load for throughput optimization")
-	t.Logf("  ✅ Handles mixed patterns gracefully")
+	t.Logf("  Adapts to low load for latency optimization")
+	t.Logf("  Scales to high load for throughput optimization")
+	t.Logf("  Handles mixed patterns gracefully")
 	t.Logf("  Production-ready adaptive performance!")
 }
 
@@ -171,16 +178,19 @@ func TestDynamicBatching_LatencyBenchmark(t *testing.T) {
 			threaded.LoopProcess()
 			time.Sleep(10 * time.Millisecond)
 
+			// Single ring, single producer.
+			w0 := threaded.NewSafeWriter(0)
+
 			// Create preload
 			for i := 0; i < tc.preload; i++ {
-				threaded.Write(0, func(slot *int) {
+				w0.Write(func(slot *int) {
 					*slot = i
 				})
 			}
 
 			// Send test message and measure latency
 			sendTime := time.Now()
-			threaded.Write(0, func(slot *int) {
+			w0.Write(func(slot *int) {
 				*slot = 999999 // Marker
 			})
 

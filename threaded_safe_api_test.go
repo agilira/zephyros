@@ -8,16 +8,18 @@ package zephyros
 
 import (
 	"errors"
+	"sync/atomic"
 	"testing"
 )
 
-// TestSafeAPI verifies the new safe API methods work correctly
-func TestSafeAPI_SafeGetWriterRing(t *testing.T) {
-	t.Log("🔒 TESTING SAFE API - SafeGetWriterRing")
+// TestSafeAPI_SingleOwnerEnforcement verifies that each ring can be claimed by
+// exactly one SafeWriter. A second NewSafeWriterWithError call on the same ring
+// must return ErrRingAlreadyAssigned; calls with out-of-range IDs return
+// ErrInvalidRingID.
+func TestSafeAPI_SingleOwnerEnforcement(t *testing.T) {
+	t.Log("TESTING SafeWriter single-owner enforcement")
 
-	processor := func(item *int) {
-		// Do nothing
-	}
+	processor := func(item *int) {}
 
 	tz, err := NewThreadedBuilder[int](256, 4).
 		WithProcessor(processor).
@@ -27,37 +29,49 @@ func TestSafeAPI_SafeGetWriterRing(t *testing.T) {
 	}
 	defer tz.Close()
 
-	// Test valid thread IDs
+	// First claim must succeed for all rings.
 	for i := 0; i < 4; i++ {
-		ring, err := tz.SafeGetWriterRing(i)
-		if err != nil {
-			t.Errorf("SafeGetWriterRing(%d) returned error: %v", i, err)
+		writer, werr := tz.NewSafeWriterWithError(i)
+		if werr != nil {
+			t.Errorf("NewSafeWriterWithError(%d) first call returned error: %v", i, werr)
+			continue
 		}
-		if ring == nil {
-			t.Errorf("SafeGetWriterRing(%d) returned nil ring", i)
+		if writer.GetRingID() != i {
+			t.Errorf("NewSafeWriterWithError(%d) returned writer for ring %d", i, writer.GetRingID())
 		}
 	}
 
-	// Test invalid thread IDs
+	// Second claim on any ring must return ErrRingAlreadyAssigned.
+	for i := 0; i < 4; i++ {
+		_, werr := tz.NewSafeWriterWithError(i)
+		if werr == nil {
+			t.Errorf("NewSafeWriterWithError(%d) second call should return error", i)
+		}
+		if !errors.Is(werr, ErrRingAlreadyAssigned) {
+			t.Errorf("NewSafeWriterWithError(%d) second call: expected ErrRingAlreadyAssigned, got %v", i, werr)
+		}
+	}
+
+	// Out-of-range IDs must return ErrInvalidRingID.
 	invalidIDs := []int{-1, 4, 5, 100}
 	for _, id := range invalidIDs {
-		ring, err := tz.SafeGetWriterRing(id)
-		if err == nil {
-			t.Errorf("SafeGetWriterRing(%d) should return error", id)
+		writer, werr := tz.NewSafeWriterWithError(id)
+		if werr == nil {
+			t.Errorf("NewSafeWriterWithError(%d) should return error for invalid ID", id)
 		}
-		if !errors.Is(err, ErrInvalidThreadID) {
-			t.Errorf("SafeGetWriterRing(%d) should return ErrInvalidThreadID, got %v", id, err)
+		if !errors.Is(werr, ErrInvalidRingID) {
+			t.Errorf("NewSafeWriterWithError(%d) expected ErrInvalidRingID, got %v", id, werr)
 		}
-		if ring != nil {
-			t.Errorf("SafeGetWriterRing(%d) should return nil ring on error", id)
+		if writer != nil {
+			t.Errorf("NewSafeWriterWithError(%d) should return nil writer on error", id)
 		}
 	}
 
-	t.Log("✅ SafeGetWriterRing test passed")
+	t.Log("Single-owner enforcement test passed")
 }
 
 func TestSafeAPI_NewSafeWriterWithError(t *testing.T) {
-	t.Log("🔒 TESTING SAFE API - NewSafeWriterWithError")
+	t.Log("TESTING SAFE API - NewSafeWriterWithError")
 
 	processor := func(item *int) {
 		// Do nothing
@@ -71,16 +85,17 @@ func TestSafeAPI_NewSafeWriterWithError(t *testing.T) {
 	}
 	defer tz.Close()
 
-	// Test valid ring IDs
+	// Test valid ring IDs.
+	// WHY no explicit writer == nil check after continue: if err is nil,
+	// NewSafeWriterWithError guarantees a non-nil writer (API contract).
+	// A nil writer would panic on GetRingID(), making the bug visible.
 	for i := 0; i < 4; i++ {
-		writer, err := tz.NewSafeWriterWithError(i)
-		if err != nil {
-			t.Errorf("NewSafeWriterWithError(%d) returned error: %v", i, err)
+		writer, werr := tz.NewSafeWriterWithError(i)
+		if werr != nil {
+			t.Errorf("NewSafeWriterWithError(%d) returned error: %v", i, werr)
+			continue
 		}
-		if writer == nil {
-			t.Errorf("NewSafeWriterWithError(%d) returned nil writer", i)
-		}
-		if writer != nil && writer.GetRingID() != i {
+		if writer.GetRingID() != i {
 			t.Errorf("NewSafeWriterWithError(%d) returned wrong ring ID: %d", i, writer.GetRingID())
 		}
 	}
@@ -88,28 +103,28 @@ func TestSafeAPI_NewSafeWriterWithError(t *testing.T) {
 	// Test invalid ring IDs
 	invalidIDs := []int{-1, 4, 5, 100}
 	for _, id := range invalidIDs {
-		writer, err := tz.NewSafeWriterWithError(id)
-		if err == nil {
+		writer, werr := tz.NewSafeWriterWithError(id)
+		if werr == nil {
 			t.Errorf("NewSafeWriterWithError(%d) should return error", id)
 		}
-		if !errors.Is(err, ErrInvalidRingID) {
-			t.Errorf("NewSafeWriterWithError(%d) should return ErrInvalidRingID, got %v", id, err)
+		if !errors.Is(werr, ErrInvalidRingID) {
+			t.Errorf("NewSafeWriterWithError(%d) should return ErrInvalidRingID, got %v", id, werr)
 		}
 		if writer != nil {
 			t.Errorf("NewSafeWriterWithError(%d) should return nil writer on error", id)
 		}
 	}
 
-	t.Log("✅ NewSafeWriterWithError test passed")
+	t.Log("NewSafeWriterWithError test passed")
 }
 
-// TestDualAPI verifies both fast and safe APIs work consistently
-func TestDualAPI_Consistency(t *testing.T) {
-	t.Log("⚡ TESTING DUAL API CONSISTENCY")
+// TestSafeAPI_OwnershipBinding verifies that a SafeWriter's ring index matches
+// the index requested and that writes are forwarded to the correct ring.
+func TestSafeAPI_OwnershipBinding(t *testing.T) {
+	t.Log("TESTING SafeWriter ownership binding")
 
-	processor := func(item *int) {
-		// Do nothing
-	}
+	var processed int64
+	processor := func(item *int) { atomic.AddInt64(&processed, 1) }
 
 	tz, err := NewThreadedBuilder[int](256, 4).
 		WithProcessor(processor).
@@ -119,44 +134,24 @@ func TestDualAPI_Consistency(t *testing.T) {
 	}
 	defer tz.Close()
 
-	// Test that fast and safe APIs return the same ring for valid IDs
+	// GetRingID must match the requested index.
 	for i := 0; i < 4; i++ {
-		fastRing := tz.GetWriterRing(i)
-		safeRing, err := tz.SafeGetWriterRing(i)
-
-		if err != nil {
-			t.Errorf("SafeGetWriterRing(%d) returned error: %v", i, err)
-		}
-
-		if fastRing != safeRing {
-			t.Errorf("Fast and safe APIs returned different rings for ID %d", i)
+		writer := tz.NewSafeWriter(i)
+		if writer.GetRingID() != i {
+			t.Errorf("NewSafeWriter(%d) returned writer with ring ID %d", i, writer.GetRingID())
 		}
 	}
 
-	// Test that fast and safe writer APIs are consistent
-	for i := 0; i < 4; i++ {
-		fastWriter := tz.NewSafeWriter(i)
-		safeWriter, err := tz.NewSafeWriterWithError(i)
-
-		if err != nil {
-			t.Errorf("NewSafeWriterWithError(%d) returned error: %v", i, err)
-		}
-
-		if fastWriter.GetRingID() != safeWriter.GetRingID() {
-			t.Errorf("Fast and safe writer APIs returned different ring IDs for ID %d", i)
-		}
-	}
-
-	t.Log("✅ Dual API consistency test passed")
+	t.Log("Ownership binding test passed")
 }
 
-// TestFastAPI_StillPanics verifies the fast API still panics as expected
-func TestFastAPI_StillPanics(t *testing.T) {
-	t.Log("💥 TESTING FAST API STILL PANICS")
+// TestSafeWriter_DoubleAssignmentPanic verifies that claiming the same ring twice
+// panics. Only NewSafeWriter (panic variant) is tested here; the error variant
+// is covered in TestSafeAPI_SingleOwnerEnforcement.
+func TestSafeWriter_DoubleAssignmentPanic(t *testing.T) {
+	t.Log("TESTING NewSafeWriter double-assignment panic")
 
-	processor := func(item *int) {
-		// Do nothing
-	}
+	processor := func(item *int) {}
 
 	tz, err := NewThreadedBuilder[int](256, 4).
 		WithProcessor(processor).
@@ -166,20 +161,20 @@ func TestFastAPI_StillPanics(t *testing.T) {
 	}
 	defer tz.Close()
 
-	// Test GetWriterRing panic
 	defer func() {
 		if r := recover(); r == nil {
-			t.Error("GetWriterRing with invalid ID should panic")
+			t.Error("NewSafeWriter double-assignment must panic")
 		} else {
-			t.Log("✅ GetWriterRing correctly panicked:", r)
+			t.Log("Double-assignment correctly panicked:", r)
 		}
 	}()
 
-	_ = tz.GetWriterRing(100) // Should panic
+	_ = tz.NewSafeWriter(0) // First claim: succeeds.
+	_ = tz.NewSafeWriter(0) // Second claim: must panic.
 }
 
 func TestFastAPI_NewSafeWriterPanics(t *testing.T) {
-	t.Log("💥 TESTING NewSafeWriter STILL PANICS")
+	t.Log("TESTING NewSafeWriter STILL PANICS")
 
 	processor := func(item *int) {
 		// Do nothing
@@ -198,7 +193,7 @@ func TestFastAPI_NewSafeWriterPanics(t *testing.T) {
 		if r := recover(); r == nil {
 			t.Error("NewSafeWriter with invalid ID should panic")
 		} else {
-			t.Log("✅ NewSafeWriter correctly panicked:", r)
+			t.Log("NewSafeWriter correctly panicked:", r)
 		}
 	}()
 

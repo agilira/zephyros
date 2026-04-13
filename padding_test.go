@@ -95,7 +95,7 @@ func TestPaddedInt64_CacheLineAlignment(t *testing.T) {
 		t.Errorf("Expected PaddedInt64 size to be 64 bytes, got %d", size)
 	}
 
-	t.Logf("PaddedInt64 size: %d bytes (✅ cache-line aligned)", size)
+	t.Logf("PaddedInt64 size: %d bytes (cache-line aligned)", size)
 }
 
 // Test false sharing prevention with concurrent access
@@ -130,7 +130,7 @@ func TestAtomicPaddedInt64_FalseSharingPrevention(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ False sharing test passed: %d goroutines × %d iterations", numGoroutines, iterations)
+	t.Logf("False sharing test passed: %d goroutines × %d iterations", numGoroutines, iterations)
 }
 
 // Benchmark AtomicPaddedInt64 vs regular atomic.Int64 to show performance difference
@@ -207,5 +207,5 @@ func TestMemoryLayout(t *testing.T) {
 		}
 	}
 
-	t.Logf("✅ Memory layout test passed: %d padded elements in array", arraySize)
+	t.Logf("Memory layout test passed: %d padded elements in array", arraySize)
 }

@@ -59,22 +59,26 @@ func TestHighPerformanceOptimized(t *testing.T) {
 
 	startTime := time.Now()
 
-	// ZERO-CONTENTION PRODUCERS: Each producer has dedicated ring
+	// ZERO-CONTENTION PRODUCERS: Each producer has dedicated ring.
+	// SafeWriters are created before goroutines start (SPSC enforcement).
+	writers := make([]*SafeWriter[int], numProducers)
+	for id := 0; id < numProducers; id++ {
+		writers[id] = threaded.NewSafeWriter(id)
+	}
+
 	var wg sync.WaitGroup
 	successfulWrites := int64(0)
 
 	for producerID := 0; producerID < numProducers; producerID++ {
 		wg.Add(1)
-		go func(pID int) {
+		go func(w *SafeWriter[int]) {
 			defer wg.Done()
 
-			// Dedicated ring = zero atomic contention between producers
-			ringID := pID
 			localWrites := int64(0)
 
 			// Tight write loop with minimal overhead
 			for i := 0; i < messagesPerProducer; i++ {
-				if threaded.Write(ringID, func(slot *int) {
+				if w.Write(func(slot *int) {
 					*slot = i // Simple assignment
 				}) {
 					localWrites++
@@ -86,7 +90,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 			}
 
 			atomic.AddInt64(&successfulWrites, localWrites)
-		}(producerID)
+		}(writers[producerID])
 	}
 
 	// Wait for all writes to complete
@@ -100,7 +104,7 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	writeThroughput := float64(successfulWrites) / writeTime.Seconds()
 	t.Logf("  Write throughput: %.1fM ops/sec", writeThroughput/1000000)
 
-	// 🏃‍♂️ PROCESSING PHASE: Wait for all processing to complete
+	// PROCESSING PHASE: Wait for all processing to complete
 	t.Logf("PROCESSING PHASE:")
 
 	for atomic.LoadInt64(&processed) < successfulWrites {
@@ -142,29 +146,10 @@ func TestHighPerformanceOptimized(t *testing.T) {
 	t.Logf("  Achieved: %.1fM ops/sec", overallThroughput/1000000)
 	t.Logf("  Minimum expected: %.1fM ops/sec", expectedMinThroughput/1000000)
 
-	// PERFORMANCE CLASSIFICATION (CI-friendly thresholds)
-	if overallThroughput >= 5000000 {
-		t.Logf("")
-		t.Logf("EXCEPTIONAL PERFORMANCE!")
-		t.Logf("Zephyros throughput: %.1fM ops/sec", overallThroughput/1000000)
-		t.Logf("Ultra-high performance achieved!")
-		t.Logf("ZEPHYROS EXCELLENCE DEMONSTRATED!")
-	} else if overallThroughput >= 2000000 {
-		t.Logf("")
-		t.Logf("EXCELLENT PERFORMANCE!")
-		t.Logf("High-performance target achieved")
-		t.Logf("Close to optimal throughput")
-	} else if overallThroughput >= 1000000 {
-		t.Logf("")
-		t.Logf("GOOD PERFORMANCE")
-		t.Logf("Acceptable performance level")
-	} else {
-		t.Logf("")
-		t.Logf("PERFORMANCE ISSUE DETECTED")
-		t.Logf("Below expected performance levels")
-	}
-
-	// Ensure we meet minimum performance standards
+	// Ensure we meet minimum performance standards.
+	// WHY no tier classification: the only signal that matters for CI is
+	// whether throughput meets the floor; graded labels add branches
+	// without adding information.
 	if overallThroughput < expectedMinThroughput {
 		t.Errorf("FAILED: Expected >%.1fM ops/sec, got %.1fM ops/sec",
 			expectedMinThroughput/1000000, overallThroughput/1000000)

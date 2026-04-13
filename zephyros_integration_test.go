@@ -74,12 +74,17 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 
 	startTime := time.Now()
 
+	// One writer per ring (numThreads == numRings, so thread→ring is 1:1).
+	logWriters := make([]*SafeWriter[LogEntry], numRings)
+	for id := 0; id < numRings; id++ {
+		logWriters[id] = threaded.NewSafeWriter(id)
+	}
+
 	for threadID := 0; threadID < numThreads; threadID++ {
 		wg.Add(1)
-		go func(tid int) {
+		go func(w *SafeWriter[LogEntry], tid int) {
 			defer wg.Done()
 
-			ringID := tid % numRings // Thread affinity
 			levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 
 			for i := 0; i < logsPerThread; i++ {
@@ -92,7 +97,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 				}
 
 				// Write to pipeline
-				success := threaded.Write(ringID, func(slot *LogEntry) {
+				success := w.Write(func(slot *LogEntry) {
 					*slot = entry
 				})
 
@@ -102,7 +107,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 					i-- // Retry this log
 				}
 			}
-		}(threadID)
+		}(logWriters[threadID], threadID)
 	}
 
 	wg.Wait()
@@ -133,14 +138,12 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 
 	// Assertions
 	if finalProcessed != int64(totalLogs) {
-		t.Errorf("❌ Expected %d processed logs, got %d", totalLogs, finalProcessed)
+		t.Errorf("expected %d processed logs, got %d", totalLogs, finalProcessed)
 	}
 
-	if actualLogCount != totalLogs {
-		t.Errorf("❌ Expected %d stored logs, got %d", totalLogs, actualLogCount)
-	}
-
-	// Verify log distribution across threads
+	// Verify log distribution across threads.
+	// WHY not also asserting len(processedLogs): finalProcessed measures the
+	// same increments under the same mutex, so they are always equal at drain.
 	threadCounts := make(map[int]int)
 	processingMutex.Lock()
 	for _, log := range processedLogs {
@@ -150,7 +153,7 @@ func TestZephyros_LoggingPipeline(t *testing.T) {
 
 	for threadID := 0; threadID < numThreads; threadID++ {
 		if threadCounts[threadID] != logsPerThread {
-			t.Errorf("❌ Thread %d: expected %d logs, got %d", threadID, logsPerThread, threadCounts[threadID])
+			t.Errorf("thread %d: expected %d logs, got %d", threadID, logsPerThread, threadCounts[threadID])
 		}
 	}
 
@@ -190,8 +193,11 @@ func TestZephyros_EventProcessing(t *testing.T) {
 		atomic.AddInt64(&processedCount, 1)
 	}
 
-	// Build event processing system
-	numRings := 2 // Smaller for focused testing
+	// Build event processing system.
+	// numRings must equal numSources to satisfy the Anemoi invariant:
+	// one producer goroutine per ring.
+	numSources := 3
+	numRings := numSources
 	eventSystem, err := NewThreadedBuilder[Event](131072, numRings).
 		WithProcessor(processor).
 		WithBatchSize(4096).
@@ -210,19 +216,22 @@ func TestZephyros_EventProcessing(t *testing.T) {
 
 	// Simulate event sources
 	eventTypes := []string{"user_click", "page_view", "purchase", "signup"}
-	numSources := 3
 	eventsPerSource := 5000
 	totalEvents := numSources * eventsPerSource
 
 	var wg sync.WaitGroup
 	startTime := time.Now()
 
+	// Create writers before goroutines start (SPSC enforcement at init).
+	eventWriters := make([]*SafeWriter[Event], numSources)
+	for id := 0; id < numSources; id++ {
+		eventWriters[id] = eventSystem.NewSafeWriter(id)
+	}
+
 	for sourceID := 0; sourceID < numSources; sourceID++ {
 		wg.Add(1)
-		go func(sID int) {
+		go func(w *SafeWriter[Event], sID int) {
 			defer wg.Done()
-
-			ringID := sID % numRings
 
 			for i := 0; i < eventsPerSource; i++ {
 				event := Event{
@@ -236,7 +245,7 @@ func TestZephyros_EventProcessing(t *testing.T) {
 					Timestamp: time.Now(),
 				}
 
-				success := eventSystem.Write(ringID, func(slot *Event) {
+				success := w.Write(func(slot *Event) {
 					*slot = event
 				})
 
@@ -245,7 +254,7 @@ func TestZephyros_EventProcessing(t *testing.T) {
 					i-- // Retry
 				}
 			}
-		}(sourceID)
+		}(eventWriters[sourceID], sourceID)
 	}
 
 	wg.Wait()
@@ -263,9 +272,7 @@ func TestZephyros_EventProcessing(t *testing.T) {
 
 	// Validate processing
 	eventMutex.Lock()
-	actualEvents := len(processedEvents)
-
-	// Count events by type
+	// Count events by type for distribution verification.
 	typeCounts := make(map[string]int)
 	for _, event := range processedEvents {
 		typeCounts[event.Type]++
@@ -276,30 +283,24 @@ func TestZephyros_EventProcessing(t *testing.T) {
 	t.Logf("EVENT PROCESSING RESULTS:")
 	t.Logf("  Expected events: %d", totalEvents)
 	t.Logf("  Processed events: %d", finalProcessed)
-	t.Logf("  Stored events: %d", actualEvents)
 	t.Logf("  Processing time: %v", totalTime)
 	t.Logf("  Throughput: %.1fM events/sec", float64(finalProcessed)/totalTime.Seconds()/1000000)
 
-	t.Logf("Event type distribution:")
-	for eventType, count := range typeCounts {
-		t.Logf("  %s: %d events", eventType, count)
-	}
-
 	// Assertions
 	if finalProcessed != int64(totalEvents) {
-		t.Errorf("❌ Expected %d processed events, got %d", totalEvents, finalProcessed)
+		t.Errorf("expected %d processed events, got %d", totalEvents, finalProcessed)
 	}
 
 	// Verify each event type was processed
 	expectedCountPerType := totalEvents / len(eventTypes)
 	for _, eventType := range eventTypes {
 		if typeCounts[eventType] != expectedCountPerType {
-			t.Errorf("❌ Event type %s: expected ~%d events, got %d",
+			t.Errorf("event type %s: expected ~%d events, got %d",
 				eventType, expectedCountPerType, typeCounts[eventType])
 		}
 	}
 
-	t.Logf("✅ EVENT PROCESSING TEST PASSED - All events processed correctly!")
+	t.Logf("EVENT PROCESSING TEST PASSED - All events processed correctly!")
 }
 
 // TestZephyros_WorkerPool simulates a worker pool scenario
@@ -362,6 +363,12 @@ func TestZephyros_WorkerPool(t *testing.T) {
 	var wg sync.WaitGroup
 	startTime := time.Now()
 
+	// One writer per ring, created before the submission goroutine.
+	taskWriters := make([]*SafeWriter[Task], numWorkers)
+	for id := 0; id < numWorkers; id++ {
+		taskWriters[id] = workerPool.NewSafeWriter(id)
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -372,9 +379,7 @@ func TestZephyros_WorkerPool(t *testing.T) {
 				Input: (i % 10) + 1, // Factorial of 1-10
 			}
 
-			ringID := i % numWorkers // Distribute across workers
-
-			success := workerPool.Write(ringID, func(slot *Task) {
+			success := taskWriters[i%numWorkers].Write(func(slot *Task) {
 				*slot = task
 			})
 
@@ -388,7 +393,7 @@ func TestZephyros_WorkerPool(t *testing.T) {
 	wg.Wait()
 	submissionTime := time.Since(startTime)
 
-	t.Logf("✅ Task submission completed in %v", submissionTime)
+	t.Logf("Task submission completed in %v", submissionTime)
 
 	// Wait for all tasks to complete
 	for atomic.LoadInt64(&completedCount) < int64(numTasks) {
@@ -453,10 +458,10 @@ func TestZephyros_WorkerPool(t *testing.T) {
 	taskMutex.Unlock()
 
 	if len(taskIDs) != numTasks {
-		t.Errorf("❌ Expected %d unique task IDs, got %d", numTasks, len(taskIDs))
+		t.Errorf("Expected %d unique task IDs, got %d", numTasks, len(taskIDs))
 	}
 
-	t.Logf("✅ WORKER POOL TEST PASSED - All tasks processed correctly!")
+	t.Logf("WORKER POOL TEST PASSED - All tasks processed correctly!")
 }
 
 // TestZephyros_LongRunningStability tests system stability over time
@@ -497,12 +502,16 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
-	t.Logf("🔄 Running continuous load for %v...", duration)
+	t.Logf("Running continuous load for %v...", duration)
 
 	var wg sync.WaitGroup
 	messageID := int64(0)
 
-	// Producer goroutine
+	// Producer goroutine — 2 rings, rotated by message ID.
+	sysW0 := system.NewSafeWriter(0)
+	sysW1 := system.NewSafeWriter(1)
+	sysWriters := [2]*SafeWriter[Message]{sysW0, sysW1}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -519,7 +528,7 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 					Data:      fmt.Sprintf("msg_%d", id),
 				}
 
-				success := system.Write(int(id%2), func(slot *Message) {
+				success := sysWriters[id%2].Write(func(slot *Message) {
 					*slot = msg
 				})
 
@@ -573,14 +582,13 @@ func TestZephyros_LongRunningStability(t *testing.T) {
 	stats := system.Stats()
 	t.Logf("Final system stats: %+v", stats)
 
-	if finalProcessed == 0 {
-		t.Errorf("❌ No messages were processed")
-	}
-
+	// WHY no separate finalProcessed == 0 check: if no messages are processed,
+	// processingRate evaluates to 0.0 which is already < 0.95, so the single
+	// rate check covers that case with a clearer failure message.
 	processingRate := float64(finalProcessed) / float64(finalMessages)
 	if processingRate < 0.95 { // 95% processing rate minimum
-		t.Errorf("❌ Low processing rate: %.1f%% (expected >95%%)", processingRate*100)
+		t.Errorf("low processing rate: %.1f%% (expected >95%%)", processingRate*100)
 	}
 
-	t.Logf("✅ STABILITY TEST PASSED - System stable under continuous load!")
+	t.Logf("STABILITY TEST PASSED - System stable under continuous load!")
 }

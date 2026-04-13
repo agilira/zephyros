@@ -1,61 +1,28 @@
-# Zephyros: Blazing-Fast MPSC Ring Buffer for Go
-### an AGILira fragment
+# Zephyros
+### Lock-free SPSC ring buffer driver for audit-grade event pipelines
 
-Zephyros is a lock-free, zero-allocation MPSC (Multi-Producer, Single-Consumer) ring buffer for Go, engineered for applications that demand extreme throughput, predictable latency, and uncompromising efficiency under high concurrency.
-
+An AGILira fragment.
 
 [![CI/CD Pipeline](https://github.com/agilira/zephyros/workflows/CI/CD%20Pipeline/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22CI%2FCD+Pipeline%22)
 [![Gosec Security](https://github.com/agilira/zephyros/workflows/Gosec%20Security/badge.svg)](https://github.com/agilira/zephyros/actions?query=workflow%3A%22Gosec+Security%22)
 [![Go Report Card](https://goreportcard.com/badge/github.com/agilira/zephyros?v=1)](https://goreportcard.com/report/github.com/agilira/zephyros)
-[![Coverage](https://img.shields.io/badge/coverage-94.3%25-brightgreen)](https://github.com/agilira/zephyros)
 
-## Architecture
+## What Zephyros Is
 
-Zephyros provides optimized ring buffer architectures for different concurrency patterns:
+Zephyros is a **driver**, not a library. It owns every tuning decision internally -- capacity, batch size, backoff strategy, idle sleep, EWMA smoothing. The application provides **what** to process (a function), never **how**.
 
-### Zephyros Core
-- **MPSC Lock-Free**: Single consumer, optimized single producer per ring
-- **Zero Allocations**: Pre-allocated buffers eliminate GC pressure
-- **Cache-Line Padding**: Prevents false sharing for multi-threaded performance
-- **Dynamic Adaptive Batching**: Intelligent batch sizing based on buffer load
-- **Performance**: 104M+ ops/sec sustained throughput with ~9.5ns latency
+This is deliberate. In audit-critical systems, exposing knobs creates misconfiguration risk. A forgotten batch size parameter or a wrong backoff cap can cause silent data loss under pressure. Zephyros eliminates that class of bugs by design.
 
-### ThreadedZephyros
-- **Multi-Ring Architecture**: Dedicated rings for concurrent producers
-- **Gemini Strategy**: Eliminates producer contention through ring separation  
-- **Linear Scalability**: Consistent performance across 1-8 rings
-- **Unified Consumer**: Single consumer processes all rings efficiently
+## What Zephyros Does
 
-```
-Gemini Strategy Architecture:
-
-[Producer 1] ──► [Ring 1] ──┐
-[Producer 2] ──► [Ring 2] ──┤
-[Producer 3] ──► [Ring 3] ──┼──► [Unified Consumer]
-[Producer 4] ──► [Ring 4] ──┘
-
-- Zero contention between producers
-- Single consumer eliminates coordination overhead
-- Linear scaling: N producers = N rings = constant performance
-```
-
-## Performance
-
-Zephyros is engineered for multi-producer performance. The following benchmarks demonstrate sustained throughput of 100M+ ops/sec with zero memory allocations and dynamic adaptive batching.
-
-### AMD Ryzen 5 7520U
-```
-BenchmarkThreadedZephyros_Baseline-8           374885246        9.548 ns/op    104.7M ops/sec      0 B/op    0 allocs/op
-BenchmarkThreadedZephyros_ProcessingThroughput-8 55866120       63.78 ns/op     15.7M complete/sec
-BenchmarkAtomicPaddedInt64_MultiThread-8      1000000000        1.928 ns/op    518.3M ops/sec      0 B/op    0 allocs/op
-```
-
-**Key Features:**
-- **104M+ ops/sec** write throughput 
-- **15.7M complete ops/sec** end-to-end processing
-- **Dynamic adaptive batching** automatically optimizes for load
-- **Linear scalability** across multiple rings
-- **518M atomic ops/sec** with cache-line padding
+- **Zero-allocation lock-free ring buffer** with cache-line padded atomics
+- **Two processing modes**: per-item (`ProcessorFunc`) or batch (`BatchProcessorFunc`)
+- **Automatic retry with exponential backoff** for batch failures (1ms to 1s cap)
+- **3-strike poison batch protection** with quarantine callback (`OnPoisonSkip`)
+- **Adaptive idle backoff** via EWMA tracking of processor speed
+- **Dynamic batch sizing** based on ring occupancy
+- **Graceful shutdown** with complete drain guarantee
+- **Multi-producer support** via ThreadedZephyros (N rings, unified consumer)
 
 ## Installation
 
@@ -63,187 +30,111 @@ BenchmarkAtomicPaddedInt64_MultiThread-8      1000000000        1.928 ns/op    5
 go get github.com/agilira/zephyros
 ```
 
-## Quick Start
+## Usage
 
-### Single Producer Usage
+### Per-Item Processing
 
 ```go
-package main
-
-import (
-    "fmt"
-    "github.com/agilira/zephyros"
-)
-
-func main() {
-    // Create ring buffer for single producer
-    buffer, err := zephyros.NewBuilder[int](1024).
-        WithProcessor(func(item *int) {
-            fmt.Printf("Processing: %d\n", *item)
-        }).
-        WithBatchSize(32). // Dynamic batching will adapt this
-        Build()
-
-    if err != nil {
-        panic(err)
-    }
-    defer buffer.Close()
-
-    // Start consumer
-    go buffer.LoopProcess()
-
-    // Producer: write data (single producer per ring)
-    for i := 0; i < 1000; i++ {
-        success := buffer.Write(func(slot *int) {
-            *slot = i
-        })
-        if !success {
-            fmt.Println("Buffer full - backpressure active")
-        }
-    }
+z, err := zephyros.NewBuilder[Event](0).
+    WithProcessor(func(e *Event) {
+        store.Append(*e)
+    }).
+    Build()
+if err != nil {
+    log.Fatal(err)
 }
+defer z.Close()
+
+go z.LoopProcess()
+
+z.Write(func(slot *Event) { *slot = event })
 ```
 
-### Multi-Producer Usage (ThreadedZephyros)
+### Batch Processing (Audit Pipeline)
 
 ```go
-package main
+z, err := zephyros.NewBuilder[AuditEvent](0).
+    WithBatchProcessor(func(batch []AuditEvent) error {
+        return store.AppendBatch(batch)
+    }).
+    WithOnBatchError(func(batch []AuditEvent, err error) {
+        metrics.BatchFailure(err, len(batch))
+    }).
+    WithOnPoisonSkip(func(batch []AuditEvent, err error) {
+        quarantine.Save(batch, err) // Last chance before data loss
+    }).
+    Build()
+```
 
-import (
-    "sync"
-    "github.com/agilira/zephyros"
-)
+### Multi-Producer
 
-func main() {
-    var wg sync.WaitGroup
-
-    // Create multi-ring system for concurrent producers
-    threaded, err := zephyros.NewThreadedBuilder[int](1024, 4). // 4 rings
-        WithProcessor(func(item *int) {
-            // Process item with automatic batch optimization
-        }).
-        WithBatchSize(64).
-        Build()
-
-    if err != nil {
-        panic(err)
-    }
-    defer threaded.Close()
-
-    // Start unified consumer
-    go threaded.LoopProcess()
-
-    // Multiple producers, each with dedicated ring
-    for producerID := 0; producerID < 4; producerID++ {
-        wg.Add(1)
-        go func(id int) {
-            defer wg.Done()
-            for i := 0; i < 100000; i++ {
-                threaded.Write(id, func(slot *int) {
-                    *slot = id*100000 + i
-                })
-            }
-        }(producerID)
-    }
-
-    wg.Wait()
-    fmt.Println("Multi-producer processing complete")
+```go
+tz, err := zephyros.NewThreadedBuilder[Event](0, 4).
+    WithBatchProcessor(persistBatch).
+    WithOnPoisonSkip(quarantine).
+    Build()
+if err != nil {
+    log.Fatal(err)
 }
+
+done := tz.LoopProcess()
+
+w := tz.NewSafeWriter(0)
+w.Write(func(slot *Event) { *slot = event })
+
+tz.Close()
+<-done
 ```
 
-## Advanced Features
+## Error Semantics (Batch Mode)
 
-### Dynamic Adaptive Batching
-- **Automatic optimization**: Batch size adapts to buffer occupancy
-- **Emergency drain**: 4x expansion when buffer >75% full  
-- **Ultra-low latency**: Reduces to 128 items when nearly empty
-- **Zero overhead**: Triggers only in extreme conditions
+| Failure Type | Behavior | Counter |
+|---|---|---|
+| `return error` | Cursor NOT advanced. Same batch retried with exponential backoff. | No strike count. Retries indefinitely. |
+| `panic(...)` | Recovered. Treated as error. | Strike count incremented. |
+| 3rd consecutive panic | Batch permanently skipped. `OnPoisonSkip` fires. | Counter reset. |
 
-### MPSC Contract
-- **Single producer per ring**: Optimized for maximum performance
-- **ThreadedZephyros for multiple producers**: Use separate rings
-- **Lock-free synchronization**: Pure atomic operations
+Normal errors (SQLITE_BUSY, disk full, network timeout) are transient by nature. The ring holds events safely while the consumer retries. A panic indicates corrupt data or a logic bug that will never self-heal.
 
-## Use Cases
+## Observability Hooks
 
-- **High-Frequency Trading**: Multi-feed market data processing
-- **Real-Time Analytics**: Concurrent stream processing
-- **Message Queues**: Lock-free multi-producer communication
-- **IoT Data Ingestion**: High-volume concurrent sensor processing
-- **Game Engines**: Multi-threaded entity processing
+| Hook | Fires | Purpose |
+|---|---|---|
+| `OnBatchError` | Every batch failure | Metrics, alerting |
+| `OnPoisonSkip` | Once, at permanent skip | Quarantine for forensic analysis |
+| `OnPressure` | Ring occupancy > threshold | Backpressure signaling |
+| `OnStall` | No progress for duration | Dead-producer detection |
 
-## API Reference
+All callbacks run on the consumer goroutine. They must not block.
 
-### Core Operations
-```go
-// Write to buffer (single producer per ring)
-func (z *Zephyros[T]) Write(writerFunc func(*T)) bool
+## Architecture
 
-// Process batch with dynamic sizing
-func (z *Zephyros[T]) ProcessBatch() int
+```
+Single Ring:
+[Producer] --> [Ring Buffer] --> [Consumer: LoopProcess]
+                                      |
+                                      +--> ProcessorFunc(item)
+                                      +--> BatchProcessorFunc([]item)
 
-// Continuous processing loop
-func (z *Zephyros[T]) LoopProcess()
+Multi Ring (ThreadedZephyros):
+[SafeWriter 0] --> [Ring 0] --\
+[SafeWriter 1] --> [Ring 1] ---+--> [Unified Consumer]
+[SafeWriter 2] --> [Ring 2] --/
 ```
 
-### ThreadedZephyros
-```go
-// Multi-ring builder
-func NewThreadedBuilder[T any](capacity int64, numRings int) *ThreadedBuilder[T]
+## Thread Safety
 
-// Write to specific ring
-func (t *ThreadedZephyros[T]) Write(ringID int, writerFunc func(*T)) bool
-```
+- **Single ring**: one producer, one consumer. Violating the single-producer invariant causes silent data corruption.
+- **ThreadedZephyros**: enforces single-producer-per-ring by construction via `SafeWriter`.
 
-## Performance Tuning
+## The Name
 
-```go
-// Latency optimized
-WithBatchSize(1)     // Immediate processing
-
-// Balanced (with adaptive batching)  
-WithBatchSize(32)    // Auto-adapts to load
-
-// Throughput optimized
-WithBatchSize(256)   // Amortize overhead
-```
-
-## Best Practices
-
-### Do's ✅
-- Use ThreadedZephyros for multiple producers
-- Leverage dynamic adaptive batching
-- Monitor backpressure signals
-- Use power-of-2 capacities
-
-### Don'ts ❌
-- Multiple producers on single ring
-- Multiple consumers
-- Blocking operations in processor
-
-## The Philosophy Behind Zephyros
-
-In Greek mythology, Zephyros was the god of the west wind, known for bringing gentle breezes and enabling swift travel. Unlike chaotic storms, Zephyros represented controlled power—the ability to provide exactly the right amount of force when needed.
-
-This embodies Zephyros' design philosophy: controlled multi-producer performance through intelligent architecture. The MPSC design provides gentle, predictable throughput patterns, while dynamic adaptive batching ensures the system provides exactly the right processing intensity for current load conditions. ThreadedZephyros enables swift scaling across multiple producers without the chaos of lock contention.
-
-Zephyros doesn't just move data fast—it moves it intelligently, adapting to conditions while maintaining the reliability that production systems demand.
-
-## Documentation
-
-**Quick Links:**
-- **[Quick Start Guide](./docs/QUICK_START.md)** - Get running in 2 minutes 🚀
-- **[API Reference](https://pkg.go.dev/github.com/agilira/zephyros)** - Complete API documentation on pkg.go.dev
-- **[Test Coverage Report](./coverage.html)** - Detailed coverage analysis (94.3%)
-- **[Architecture Guide](./docs/ARCHITECTURE.md)** - Deep dive into MPSC design and Gemini Strategy
-- **[ThreadedZephyros API](./docs/THREADED_API.md)** - Multi-ring API with Fast/Safe path documentation
-- **[Dynamic Batching](./docs/DYNAMIC_BATCHING.md)** - Intelligent batch size adaptation explained
-- **[Best Practices](./docs/BEST_PRACTICES.md)** - Production deployment patterns and optimization guide
+In Greek mythology, Zephyros was the god of the west wind -- controlled power, not chaotic storms. Zephyros moves data with exactly the right force: fast under load, quiet when idle.
 
 ## License
 
-Zephyros is licensed under the [Mozilla Public License 2.0](./LICENSE).
+[Mozilla Public License 2.0](./LICENSE.md)
 
 ---
 
-Zephyros • an AGILira fragment
+Zephyros -- an AGILira fragment

@@ -43,7 +43,7 @@ func TestZephyros_Flush(t *testing.T) {
 	// Note: In MPSC, Flush is a no-op as writes are automatically committed
 	zephyros.Flush()
 
-	t.Logf("✅ Flush unit test passed - method executed without error")
+	t.Logf("Flush unit test passed - method executed without error")
 }
 
 // TestZephyros_TryProcessBatch tests the TryProcessBatch method
@@ -90,7 +90,7 @@ func TestZephyros_TryProcessBatch(t *testing.T) {
 		t.Error("Expected some items to be processed")
 	}
 
-	t.Logf("✅ TryProcessBatch unit test: processed %d items", count)
+	t.Logf("TryProcessBatch unit test: processed %d items", count)
 }
 
 // TestZephyros_LoopProcess tests the LoopProcess method
@@ -139,7 +139,7 @@ func TestZephyros_LoopProcess(t *testing.T) {
 		t.Error("LoopProcess should have processed some items")
 	}
 
-	t.Logf("✅ LoopProcess unit test: processed %d items", processedCount)
+	t.Logf("LoopProcess unit test: processed %d items", processedCount)
 }
 
 // TestZephyros_Write_BufferFull tests Write behavior when buffer is full
@@ -186,7 +186,7 @@ func TestZephyros_Write_BufferFull(t *testing.T) {
 		t.Error("Should have had some failed writes due to buffer full")
 	}
 
-	t.Logf("✅ Buffer full test: %d successful, %d failed writes", successCount, failCount)
+	t.Logf("Buffer full test: %d successful, %d failed writes", successCount, failCount)
 }
 
 // TestZephyros_Write_ClosedBuffer tests Write behavior on closed buffer
@@ -214,7 +214,7 @@ func TestZephyros_Write_ClosedBuffer(t *testing.T) {
 		t.Error("Write to closed buffer should fail")
 	}
 
-	t.Logf("✅ Closed buffer write test passed")
+	t.Logf("Closed buffer write test passed")
 }
 
 // TestZephyros_ProcessBatch_Coverage tests ProcessBatch method for coverage
@@ -247,7 +247,7 @@ func TestZephyros_ProcessBatch_Coverage(t *testing.T) {
 		t.Error("ProcessBatch should have processed items")
 	}
 
-	t.Logf("✅ ProcessBatch coverage test: processed %d items", count)
+	t.Logf("ProcessBatch coverage test: processed %d items", count)
 }
 
 // TestZephyros_Stats_Coverage tests Stats method for coverage
@@ -298,7 +298,7 @@ func TestZephyros_Stats_Coverage(t *testing.T) {
 		t.Error("Stats should contain 'closed' field")
 	}
 
-	t.Logf("✅ Stats coverage test passed: %v", stats)
+	t.Logf("Stats coverage test passed: %v", stats)
 }
 
 // TestZephyros_LoopProcess_EdgeCases tests LoopProcess edge cases for better coverage
@@ -365,66 +365,85 @@ func TestZephyros_LoopProcess_EdgeCases(t *testing.T) {
 		t.Error("LoopProcess should have processed items")
 	}
 
-	t.Logf("✅ LoopProcess edge cases: processed %d items", processedCount)
+	t.Logf("LoopProcess edge cases: processed %d items", processedCount)
 }
 
-// TestZephyros_Write_ConcurrentStress tests Write method under concurrent stress
+// TestZephyros_Write_ConcurrentStress tests concurrent write throughput using the
+// correct Anemoi pattern: one producer goroutine per ring via ThreadedZephyros.
+//
+// WHY rewritten: the previous version put N goroutines on a single Zephyros ring,
+// violating the Anemoi invariant (one producer per ring). That caused a data race
+// on the buffer slot when two goroutines claimed sequences that mapped to the same
+// physical slot after a ring wrap-around. The race was latent in the original code
+// and exposed by the new CPU-friendly backoff (which makes the consumer sleep
+// longer when idle, giving producers more time to lap a small ring).
+//
+// The correct API for N concurrent producers is ThreadedZephyros: each producer
+// gets a dedicated ring with zero contention.
 func TestZephyros_Write_ConcurrentStress(t *testing.T) {
-	processed := int64(0)
+	var processed int64
 	processor := func(item *int) {
 		atomic.AddInt64(&processed, 1)
 	}
 
-	zephyros, err := NewBuilder[int](256).
+	// Use ThreadedZephyros: one ring per producer -- the Anemoi invariant.
+	numWriters := 10
+	itemsPerWriter := 50
+	totalItems := int64(numWriters * itemsPerWriter)
+
+	tz, err := NewThreadedBuilder[int](256, numWriters).
 		WithProcessor(processor).
 		WithBatchSize(64).
 		Build()
-
 	if err != nil {
-		t.Fatalf("Failed to build: %v", err)
+		t.Fatalf("Failed to build ThreadedZephyros: %v", err)
 	}
-	defer zephyros.Close()
+	defer tz.Close()
 
-	go zephyros.LoopProcess()
+	<-tz.LoopProcess()
 
-	// Stress test Write method with many concurrent writers
-	numWriters := 10
-	itemsPerWriter := 50
-	done := make(chan bool, numWriters)
+	// Create one SafeWriter per ring before goroutines start.
+	stressWriters := make([]*SafeWriter[int], numWriters)
+	for id := 0; id < numWriters; id++ {
+		stressWriters[id] = tz.NewSafeWriter(id)
+	}
 
-	for writerID := 0; writerID < numWriters; writerID++ {
-		go func(id int) {
-			successCount := 0
+	done := make(chan int, numWriters)
+	for producerID := 0; producerID < numWriters; producerID++ {
+		go func(w *SafeWriter[int]) {
+			count := 0
 			for i := 0; i < itemsPerWriter; i++ {
-				success := zephyros.Write(func(slot *int) {
-					*slot = id*1000 + i
+				ok := w.Write(func(slot *int) {
+					ringID := w.GetRingID()
+					*slot = ringID*1000 + i
 				})
-				if success {
-					successCount++
-				}
-				// Random tiny delays to create different write patterns
-				if i%10 == 0 {
-					time.Sleep(time.Nanosecond * 100)
+				if ok {
+					count++
 				}
 			}
-			t.Logf("Writer %d: %d successful writes", id, successCount)
-			done <- true
-		}(writerID)
+			done <- count
+		}(stressWriters[producerID])
 	}
 
-	// Wait for all writers
+	total := 0
 	for i := 0; i < numWriters; i++ {
-		<-done
+		total += <-done
+	}
+	t.Logf("Total successful writes: %d / %d", total, totalItems)
+
+	// Drain: wait until the consumer has processed everything that was written.
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&processed) < int64(total) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Timeout: processed %d but wrote %d", atomic.LoadInt64(&processed), total)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
-	time.Sleep(time.Millisecond * 150)
-
-	processedCount := atomic.LoadInt64(&processed)
-	if processedCount == 0 {
-		t.Error("Concurrent writes should result in some processing")
+	if atomic.LoadInt64(&processed) != int64(total) {
+		t.Errorf("Expected %d processed items, got %d", total, atomic.LoadInt64(&processed))
 	}
-
-	t.Logf("✅ Write concurrent stress: processed %d items", processedCount)
+	t.Logf("Write concurrent stress: %d items written and processed", total)
 }
 
 // TestZephyros_ProcessBatch_EdgeCases tests ProcessBatch edge cases
@@ -477,5 +496,5 @@ func TestZephyros_ProcessBatch_EdgeCases(t *testing.T) {
 		t.Error("Should process full batch")
 	}
 
-	t.Logf("✅ ProcessBatch edge cases: processed batches of %d, %d, %d, %d items", count1, count2, count3, count4)
+	t.Logf("ProcessBatch edge cases: processed batches of %d, %d, %d, %d items", count1, count2, count3, count4)
 }

@@ -1,0 +1,142 @@
+# Changelog - Version 1.1.0
+
+## Release Date
+2026-04-13
+
+## Overview
+Zephyros v1.1.0 introduces batch processing with full error semantics,
+poison batch quarantine, and four observability hooks. This release
+establishes Zephyros as an audit-grade driver: the application provides
+WHAT to process, Zephyros decides HOW.
+
+All tuning documentation has been removed. Zephyros owns every internal
+parameter. The README and package documentation have been rewritten to
+reflect the driver identity.
+
+## #New
+
+### BatchProcessorFunc
+- `WithBatchProcessor(func([]T) error)` -- batch-mode consumer path
+- Error return: cursor NOT advanced, same batch retried with exponential
+  backoff (1ms, 2ms, 4ms, ..., capped at 1s)
+- Panic recovery: panics are caught, treated as errors
+- 3-strike poison batch: after 3 consecutive panics on the same batch,
+  the batch is permanently skipped to prevent consumer freeze
+- `sync.Pool` batch buffer recycling (zero-alloc steady state)
+- Adaptive batch sizing based on ring occupancy (emergency drain at >75%)
+
+### OnPoisonSkip quarantine callback
+- `WithOnPoisonSkip(func([]T, error))` -- fires ONCE, just before a
+  poison batch is permanently dropped
+- Application's last chance to preserve batch for forensic analysis
+- Callback itself is wrapped in recover() -- a panicking quarantine
+  handler cannot freeze the consumer (defense-in-depth)
+
+### OnBatchError callback
+- `WithOnBatchError(func([]T, error))` -- fires on every batch failure
+  (error or panic), for metrics and alerting
+
+### WriteWait
+- `WriteWait(ctx.Context, func(*T)) error` -- blocking write with
+  context cancellation support
+
+### OnPressure callback
+- `WithOnPressure(threshold, func(float64, int64))` -- fires when ring
+  occupancy exceeds threshold (default 0.75)
+
+### OnStall callback
+- `WithOnStall(duration, func(int, int64, int64))` -- fires when ring
+  makes no progress for the specified duration
+
+### SafeWriter (ThreadedZephyros)
+- `NewSafeWriter(ringID)` / `NewSafeWriterWithError(ringID)` -- type-safe
+  writer bound to a specific ring, enforces single-producer invariant
+
+### doc.go
+- Package-level documentation describing driver philosophy, processing
+  modes, error semantics, and thread safety contract
+
+## #Updated
+
+### README.md
+- Complete rewrite reflecting driver identity
+- Removed all tuning guidance, performance knobs, and generic use cases
+- Added error semantics table, observability hooks table, architecture
+  diagram
+- Removed emoji from section headers
+
+### go.mod
+- Go version requirement: 1.23+
+
+### Builder
+- `validateBuilder()` extracted to keep `Build()` under gocyclo 10
+- `createRings()` extracted from `ThreadedBuilder.Build()` for same reason
+
+### Consumer loops
+- `loopItemProcessor` / `loopBatchProcessor` split from `LoopProcess`
+- EWMA-based adaptive idle sleep (matches processor speed)
+
+## #Corrected
+
+### Data race: TestAdaptiveBackoff_SlowProcessor / FastProcessor
+- Root cause: `Close()` returns before `LoopProcess()` exits. Test read
+  `processorAvgNs` while consumer goroutine still wrote it.
+- Fix: `done` channel to wait for `LoopProcess` return before reading.
+
+### Security test: PanicRecovery_ConsumerSurvives
+- Root cause: test assumed items 10-12 arrive as a single batch. Under
+  CPU pressure the consumer can deliver them across multiple batches.
+- Fix: flatten all delivered batches, verify items in order across all
+  deliveries (batch boundaries are an implementation detail).
+
+### staticcheck SA6002
+- `sync.Pool.Put([]T)` boxes the slice header. Fixed: store `*[]T`.
+
+### staticcheck S1011
+- Loop-append replaced with `append(delivered, batch...)`.
+
+### gocyclo > 10
+- `Builder.Build` (11) -- extracted `validateBuilder()`
+- `ThreadedBuilder.Build` (12) -- extracted `createRings()`
+
+### panic(nil)
+- Go 1.21+ converts `panic(nil)` to `*runtime.PanicNilError`. Fuzz seeds
+  updated to use `panic((*int)(nil))` for correct coverage.
+
+### Unused parameter
+- `copyBatchFromRing(current, end, count)` -- `end` was unused. Removed.
+
+## #Removed
+
+### docs/ folder
+- `QUICK_START.md`, `ARCHITECTURE.md`, `BEST_PRACTICES.md`,
+  `DYNAMIC_BATCHING.md`, `THREADED_API.md`, `API.md`
+- These assumed a tunable library. Zephyros is a driver. The package
+  documentation (`doc.go`) and `pkg.go.dev` replace them.
+
+### coverage.html, generate_coverage.sh
+- Generated artifacts that do not belong in version control.
+
+## #Security
+
+### New test files
+- `batch_processor_security_test.go`: 12 security tests + 2 fuzz targets
+  covering CWE-755, CWE-400, CWE-362, CWE-404, CWE-834, CWE-778, CWE-20,
+  CWE-74/CWE-117
+- Threat model block at top of file documents attack surface
+
+### Quarantine defense-in-depth
+- `OnPoisonSkip` callback wrapped in `recover()`. A panicking quarantine
+  handler cannot become a secondary denial-of-service vector.
+
+### Quality gates (all GREEN)
+- `go fmt`, `go vet`, `staticcheck`, `errcheck`, `gosec`, `gocyclo`
+- All production functions under cyclomatic complexity 10
+- 10/10 full-suite runs with `-race`: zero failures
+
+## #Testing
+- 18 new batch processor TDD tests (single + threaded)
+- 12 new security tests with CWE-tagged threat model
+- 2 new fuzz targets (panic payload, error message injection)
+- All existing tests updated for API changes
+- Zero flaky tests (data race root causes fixed)

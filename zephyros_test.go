@@ -7,6 +7,7 @@
 package zephyros
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -172,98 +173,63 @@ func TestConcurrent_SPSCBaseline(t *testing.T) {
 	t.Logf("SPSC Baseline: Processed %d items, buffered: %d", actualProcessed, stats["items_buffered"])
 }
 
-// TestMPSC_DualProducers tests multiple producers with ordering
+// TestMPSC_DualProducers tests two concurrent producers each owning a
+// dedicated ring (Anemoi invariant: one producer per ring).
+//
+// WHY ThreadedZephyros: raw Zephyros is SPSC — exactly one producer goroutine
+// per ring. Multi-producer correctness requires ThreadedZephyros which maps
+// each producer to its own ring. Using a single ring for two goroutines is
+// a data race if the ring ever wraps (sequence + capacity = same slot).
 func TestMPSC_DualProducers(t *testing.T) {
-	var processed []int
-	var mu sync.Mutex
+	var processedCount int64
+	processor := func(item *int) { atomic.AddInt64(&processedCount, 1) }
 
-	processor := func(item *int) {
-		mu.Lock()
-		processed = append(processed, *item)
-		mu.Unlock()
-	}
-
-	zephyros, err := NewBuilder[int](256). // Larger buffer for dual producers
-						WithProcessor(processor).
-						WithBatchSize(16).
-						Build() // Pure MPSC now
-
+	tz, err := NewThreadedBuilder[int](256, 2).
+		WithProcessor(processor).
+		WithBatchSize(16).
+		Build()
 	if err != nil {
-		t.Fatalf("Failed to build MPSC zephyros: %v", err)
+		t.Fatalf("build ThreadedZephyros: %v", err)
 	}
-	defer zephyros.Close()
+	<-tz.LoopProcess() // wait for both consumer goroutines to be live
+	defer tz.Close()
 
 	const itemsPerProducer = 100
 	var wg sync.WaitGroup
 
-	// Producer 1: writes even numbers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < itemsPerProducer; i++ {
-			zephyros.Write(func(slot *int) {
-				*slot = i * 2 // Even numbers: 0, 2, 4, 6...
-			})
-		}
-	}()
+	// Create writers before launching goroutines (SPSC enforcement).
+	mpscW0 := tz.NewSafeWriter(0)
+	mpscW1 := tz.NewSafeWriter(1)
+	mpscWriters := [2]*SafeWriter[int]{mpscW0, mpscW1}
 
-	// Producer 2: writes odd numbers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < itemsPerProducer; i++ {
-			zephyros.Write(func(slot *int) {
-				*slot = i*2 + 1 // Odd numbers: 1, 3, 5, 7...
-			})
-		}
-	}()
-
-	// Consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		start := time.Now()
-		for {
-			// Check termination condition with proper synchronization
-			mu.Lock()
-			currentLen := len(processed)
-			mu.Unlock()
-
-			if currentLen >= itemsPerProducer*2 || time.Since(start) >= 5*time.Second {
-				break
+	// Each goroutine writes exclusively to its own ring (ringID = producerID).
+	wg.Add(2)
+	for producer := 0; producer < 2; producer++ {
+		go func(w *SafeWriter[int]) {
+			defer wg.Done()
+			for i := 0; i < itemsPerProducer; i++ {
+				ringID := w.GetRingID()
+				val := ringID*itemsPerProducer + i
+				for !w.Write(func(slot *int) { *slot = val }) {
+					// Ring full; yield and retry rather than busy-loop.
+					runtime.Gosched()
+				}
 			}
-
-			count := zephyros.ProcessBatch()
-			if count == 0 {
-				time.Sleep(time.Microsecond)
-			}
-		}
-	}()
-
+		}(mpscWriters[producer])
+	}
 	wg.Wait()
 
-	// Verify all items processed
-	if len(processed) != itemsPerProducer*2 {
-		t.Errorf("Expected %d processed items, got %d", itemsPerProducer*2, len(processed))
+	// Drain: wait until all written items have been processed.
+	deadline := time.Now().Add(5 * time.Second)
+	for atomic.LoadInt64(&processedCount) < int64(itemsPerProducer*2) && time.Now().Before(deadline) {
+		runtime.Gosched()
 	}
 
-	// Verify we got both even and odd numbers
-	evenCount, oddCount := 0, 0
-	for _, val := range processed {
-		if val%2 == 0 {
-			evenCount++
-		} else {
-			oddCount++
-		}
+	if got := int(atomic.LoadInt64(&processedCount)); got != itemsPerProducer*2 {
+		t.Errorf("expected %d items processed, got %d", itemsPerProducer*2, got)
+	} else {
+		t.Logf("MPSC: %d items processed via 2 producers / 2 rings", got)
 	}
-
-	if evenCount != itemsPerProducer || oddCount != itemsPerProducer {
-		t.Errorf("Expected %d even and %d odd numbers, got %d even and %d odd",
-			itemsPerProducer, itemsPerProducer, evenCount, oddCount)
-	}
-
-	t.Logf("MPSC Success: Processed %d items from 2 producers (%d even, %d odd)",
-		len(processed), evenCount, oddCount)
 }
 
 // TestBackpressure_BufferFull tests backpressure handling

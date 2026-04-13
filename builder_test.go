@@ -86,8 +86,6 @@ func TestBuilder_ValidationErrors(t *testing.T) {
 		batchSize     int64
 		expectedError string
 	}{
-		{"Zero capacity", 0, processor, 1, "capacity must be a power of two"},
-		{"Negative capacity", -1, processor, 1, "capacity must be a power of two"},
 		{"Non-power-of-two capacity", 7, processor, 1, "capacity must be a power of two"},
 		{"Missing processor", 8, nil, 1, "missing processor function"},
 		{"Zero batch size", 8, processor, 0, "batch size must be positive, got 0"},

@@ -35,10 +35,17 @@ func BenchmarkThreadedZephyros_Baseline(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// One SafeWriter per ring — created outside the timer window.
+	writers := [4]*SafeWriter[int]{
+		threaded.NewSafeWriter(0),
+		threaded.NewSafeWriter(1),
+		threaded.NewSafeWriter(2),
+		threaded.NewSafeWriter(3),
+	}
+
 	// Optimal pattern: each iteration uses different ring (no contention)
 	for i := 0; i < b.N; i++ {
-		ringID := i % 4
-		threaded.Write(ringID, func(slot *int) {
+		writers[i%4].Write(func(slot *int) {
 			*slot = i
 		})
 	}
@@ -62,9 +69,10 @@ func BenchmarkThreadedZephyros_SingleRing(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Single producer to single ring - optimal case
+	// Single producer, single ring.
+	w0 := threaded.NewSafeWriter(0)
 	for i := 0; i < b.N; i++ {
-		threaded.Write(0, func(slot *int) {
+		w0.Write(func(slot *int) {
 			*slot = i
 		})
 	}
@@ -92,10 +100,15 @@ func BenchmarkThreadedZephyros_WriteOnly(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Optimal write pattern: distribute across rings
+	// Distribute writes across rings without starting processors.
+	wo := [4]*SafeWriter[int]{
+		threaded.NewSafeWriter(0),
+		threaded.NewSafeWriter(1),
+		threaded.NewSafeWriter(2),
+		threaded.NewSafeWriter(3),
+	}
 	for i := 0; i < b.N; i++ {
-		ringID := i % 4
-		threaded.Write(ringID, func(slot *int) {
+		wo[i%4].Write(func(slot *int) {
 			*slot = i
 		})
 	}
@@ -150,10 +163,12 @@ func BenchmarkThreadedZephyros_ProcessingThroughput(b *testing.B) {
 
 	b.ResetTimer()
 
-	// Write messages across rings
+	// Write messages across 2 rings.
+	pw0 := threaded.NewSafeWriter(0)
+	pw1 := threaded.NewSafeWriter(1)
+	pw := [2]*SafeWriter[int]{pw0, pw1}
 	for i := 0; i < b.N; i++ {
-		ringID := i % 2
-		threaded.Write(ringID, func(slot *int) {
+		pw[i%2].Write(func(slot *int) {
 			*slot = i
 		})
 	}
@@ -193,10 +208,13 @@ func benchmarkBatchSize(b *testing.B, batchSize int64) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Optimal write pattern: distribute across rings for no contention
+	// Distribute writes optimally across available rings.
+	bsWriters := make([]*SafeWriter[int], 4)
+	for id := 0; id < 4; id++ {
+		bsWriters[id] = threaded.NewSafeWriter(id)
+	}
 	for i := 0; i < b.N; i++ {
-		ringID := i % 4
-		threaded.Write(ringID, func(slot *int) {
+		bsWriters[i%4].Write(func(slot *int) {
 			*slot = i
 		})
 	}
@@ -227,10 +245,14 @@ func benchmarkRingConfig(b *testing.B, numRings int) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Create one SafeWriter per ring outside the timer window.
+	rcWriters := make([]*SafeWriter[int], numRings)
+	for id := 0; id < numRings; id++ {
+		rcWriters[id] = threaded.NewSafeWriter(id)
+	}
 	// Distribute writes optimally across available rings
 	for i := 0; i < b.N; i++ {
-		ringID := i % numRings
-		threaded.Write(ringID, func(slot *int) {
+		rcWriters[i%numRings].Write(func(slot *int) {
 			*slot = i
 		})
 	}

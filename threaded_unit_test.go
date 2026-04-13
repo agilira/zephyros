@@ -7,6 +7,7 @@
 package zephyros
 
 import (
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,10 +47,10 @@ func TestThreadedBuilder_WithWorkers(t *testing.T) {
 		t.Error("WithWorkers(-5) should set to runtime.NumCPU()")
 	}
 
-	t.Logf("✅ WithWorkers unit test passed")
+	t.Logf("WithWorkers unit test passed")
 }
 
-// TestThreadedZephyros_Write tests the Write method with thread ID validation
+// TestThreadedZephyros_Write tests writing via a SafeWriter
 func TestThreadedZephyros_Write(t *testing.T) {
 	processed := int64(0)
 	processor := func(item *int) {
@@ -66,28 +67,30 @@ func TestThreadedZephyros_Write(t *testing.T) {
 	}
 	defer threaded.Close()
 
-	// Test valid thread ID 0
-	success := threaded.Write(0, func(slot *int) {
+	// Each ring gets exactly one SafeWriter (SPSC enforcement at creation time).
+	w0 := threaded.NewSafeWriter(0)
+	success := w0.Write(func(slot *int) {
 		*slot = 42
 	})
-
 	if !success {
-		t.Error("Write with valid thread ID 0 should succeed")
+		t.Error("Write via SafeWriter(0) should succeed")
 	}
 
-	// Test valid thread ID 1
-	success = threaded.Write(1, func(slot *int) {
+	w1 := threaded.NewSafeWriter(1)
+	success = w1.Write(func(slot *int) {
 		*slot = 43
 	})
-
 	if !success {
-		t.Error("Write with valid thread ID 1 should succeed")
+		t.Error("Write via SafeWriter(1) should succeed")
 	}
 
-	t.Logf("✅ ThreadedZephyros Write unit test passed")
+	t.Logf("ThreadedZephyros Write unit test passed")
 }
 
-// TestThreadedZephyros_Write_InvalidThreadID tests panic behavior for invalid thread IDs
+// TestThreadedZephyros_Write_InvalidThreadID verifies that an invalid ring ID is
+// rejected at SafeWriter creation time, not silently at Write time.
+// WHY: moving validation to creation makes the error impossible to miss and
+// eliminates the "write succeeded but went nowhere" failure mode.
 func TestThreadedZephyros_Write_InvalidThreadID(t *testing.T) {
 	processor := func(item *int) {}
 
@@ -101,18 +104,22 @@ func TestThreadedZephyros_Write_InvalidThreadID(t *testing.T) {
 	}
 	defer threaded.Close()
 
-	// Test invalid ring ID - should return false, not panic
-	success := threaded.Write(99, func(slot *int) {
-		*slot = 99
-	})
-	if success {
-		t.Error("Write with invalid thread ID should return false")
+	// Invalid ring ID must be rejected at writer creation, not at write time.
+	writer, werr := threaded.NewSafeWriterWithError(99)
+	if werr == nil {
+		t.Error("NewSafeWriterWithError with invalid ID must return error")
+	}
+	if !errors.Is(werr, ErrInvalidRingID) {
+		t.Errorf("Expected ErrInvalidRingID, got %v", werr)
+	}
+	if writer != nil {
+		t.Error("NewSafeWriterWithError with invalid ID must return nil writer")
 	}
 
-	t.Logf("✅ Write with invalid thread ID correctly returned false")
+	t.Logf("Invalid ring ID correctly rejected at writer creation time")
 }
 
-// TestThreadedZephyros_GetWriterRing tests GetWriterRing method coverage
+// TestThreadedZephyros_GetWriterRing verifies NewSafeWriter for all valid ring IDs.
 func TestThreadedZephyros_GetWriterRing(t *testing.T) {
 	processor := func(item *int) {}
 
@@ -126,18 +133,23 @@ func TestThreadedZephyros_GetWriterRing(t *testing.T) {
 	}
 	defer threaded.Close()
 
-	// Test getting each ring
+	// Each valid ring ID must yield a non-nil SafeWriter with the correct ring index.
 	for i := 0; i < 3; i++ {
-		ring := threaded.GetWriterRing(i)
-		if ring == nil {
-			t.Errorf("GetWriterRing(%d) should not return nil", i)
+		writer := threaded.NewSafeWriter(i)
+		if writer == nil {
+			t.Errorf("NewSafeWriter(%d) should not return nil", i)
+		}
+		if writer.GetRingID() != i {
+			t.Errorf("NewSafeWriter(%d) returned writer for ring %d", i, writer.GetRingID())
 		}
 	}
 
-	t.Logf("✅ GetWriterRing unit test passed")
+	t.Logf("NewSafeWriter valid-ID coverage test passed")
 }
 
-// TestThreadedZephyros_GetWriterRing_InvalidID tests panic behavior for invalid ring IDs
+// TestThreadedZephyros_GetWriterRing_InvalidID verifies that assigning a ring
+// a second time panics immediately. Double-assignment violates the SPSC
+// invariant and must be a hard, visible error.
 func TestThreadedZephyros_GetWriterRing_InvalidID(t *testing.T) {
 	processor := func(item *int) {}
 
@@ -151,17 +163,18 @@ func TestThreadedZephyros_GetWriterRing_InvalidID(t *testing.T) {
 	}
 	defer threaded.Close()
 
-	// Test that invalid ring ID panics (this is by design)
 	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("✅ Expected panic for invalid ring ID: %v", r)
+		if r := recover(); r == nil {
+			t.Error("Double-assignment of a ring must panic; no panic received")
 		} else {
-			t.Error("Expected panic for invalid ring ID, but didn't panic")
+			t.Logf("Double-assignment correctly panicked: %v", r)
 		}
 	}()
 
-	// This should panic
-	threaded.GetWriterRing(99)
+	// First assignment succeeds.
+	_ = threaded.NewSafeWriter(0)
+	// Second assignment to the same ring must panic.
+	threaded.NewSafeWriter(0)
 }
 
 // TestSafeWriter_Creation tests NewSafeWriter method
@@ -189,7 +202,7 @@ func TestSafeWriter_Creation(t *testing.T) {
 		t.Error("NewSafeWriter(1) should not return nil")
 	}
 
-	t.Logf("✅ SafeWriter creation test passed")
+	t.Logf("SafeWriter creation test passed")
 }
 
 // TestSafeWriter_InvalidRingID tests panic behavior for invalid ring IDs
@@ -211,7 +224,7 @@ func TestSafeWriter_InvalidRingID(t *testing.T) {
 		if r := recover(); r != nil {
 			expectedMsg := "CRITICAL BUG: invalid ringID 99 (valid range: 0-1)"
 			if r.(string) == expectedMsg {
-				t.Logf("✅ Expected panic for invalid ring ID: %s", r)
+				t.Logf("Expected panic for invalid ring ID: %s", r)
 			} else {
 				t.Errorf("Unexpected panic message: %v", r)
 			}
@@ -223,7 +236,7 @@ func TestSafeWriter_InvalidRingID(t *testing.T) {
 	// This should panic
 	threaded.NewSafeWriter(99)
 
-	t.Logf("✅ SafeWriter invalid ring ID panic test passed")
+	t.Logf("SafeWriter invalid ring ID panic test passed")
 }
 
 // TestSafeWriter_GetRingID tests GetRingID method
@@ -251,7 +264,7 @@ func TestSafeWriter_GetRingID(t *testing.T) {
 		t.Errorf("Expected ring ID 2, got %d", writer2.GetRingID())
 	}
 
-	t.Logf("✅ SafeWriter GetRingID test passed")
+	t.Logf("SafeWriter GetRingID test passed")
 }
 
 // TestSafeWriter_Write tests SafeWriter Write method
@@ -282,7 +295,7 @@ func TestSafeWriter_Write(t *testing.T) {
 		t.Error("SafeWriter Write should succeed")
 	}
 
-	t.Logf("✅ SafeWriter Write test passed")
+	t.Logf("SafeWriter Write test passed")
 }
 
 // TestThreadedZephyros_Stats tests Stats method
@@ -315,7 +328,7 @@ func TestThreadedZephyros_Stats(t *testing.T) {
 		t.Errorf("Expected closed=0, got %d", stats["closed"])
 	}
 
-	t.Logf("✅ ThreadedZephyros Stats test passed")
+	t.Logf("ThreadedZephyros Stats test passed")
 }
 
 // TestThreadedZephyros_LoopProcessAndClose tests LoopProcess and Close methods
@@ -338,7 +351,8 @@ func TestThreadedZephyros_LoopProcessAndClose(t *testing.T) {
 	threaded.LoopProcess()
 
 	// Write some data
-	success := threaded.Write(0, func(slot *int) {
+	writer := threaded.NewSafeWriter(0)
+	success := writer.Write(func(slot *int) {
 		*slot = 42
 	})
 
@@ -358,5 +372,5 @@ func TestThreadedZephyros_LoopProcessAndClose(t *testing.T) {
 		t.Errorf("Expected closed=1, got %d", stats["closed"])
 	}
 
-	t.Logf("✅ ThreadedZephyros LoopProcess and Close test passed")
+	t.Logf("ThreadedZephyros LoopProcess and Close test passed")
 }
