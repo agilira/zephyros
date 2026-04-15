@@ -1,5 +1,5 @@
 # Zephyros
-### Lock-free SPSC ring buffer driver for audit-grade event pipelines
+### Lock-free SPSC MPSC ring buffer driver for audit-grade event pipelines
 
 An AGILira fragment.
 
