@@ -142,12 +142,18 @@ func TestSecurity_BatchProcessor_PanicRecovery_ConsumerSurvives(t *testing.T) {
 		z.Write(func(slot *int) { *slot = val })
 	}
 
+	// WHY count items not batches: the ring buffer may deliver items 10-12
+	// across multiple small batches depending on scheduler timing.
+	// Waiting for exactly 1 batch could break as soon as [10] alone arrives.
 	deadline = time.After(5 * time.Second)
 	for {
 		mu.Lock()
-		got := len(processedBatches)
+		var total int
+		for _, b := range processedBatches {
+			total += len(b)
+		}
 		mu.Unlock()
-		if got >= 1 {
+		if total >= 3 {
 			break
 		}
 		select {
