@@ -1,0 +1,10 @@
+# Changelog - Version 1.1.1
+
+## Release Date
+2026-05-03
+
+## Overview
+Maintenance release. No API changes, no behavioral changes.
+
+## Changed
+- Bumped minimum Go toolchain requirement from 1.23 to 1.25.9.
